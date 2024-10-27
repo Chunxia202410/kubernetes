@@ -20,8 +20,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -30,10 +35,6 @@ import (
 	kubecm "k8s.io/kubernetes/pkg/kubelet/cm"
 	"k8s.io/kubernetes/test/e2e/framework"
 	imageutils "k8s.io/kubernetes/test/utils/image"
-
-	"github.com/google/go-cmp/cmp"
-	"github.com/onsi/ginkgo/v2"
-	"github.com/onsi/gomega"
 )
 
 const (
@@ -72,12 +73,13 @@ type ContainerAllocations struct {
 }
 
 type ResizableContainerInfo struct {
-	Name         string
-	Resources    *ContainerResources
-	Allocations  *ContainerAllocations
-	CPUPolicy    *v1.ResourceResizeRestartPolicy
-	MemPolicy    *v1.ResourceResizeRestartPolicy
-	RestartCount int32
+	Name                 string
+	Resources            *ContainerResources
+	Allocations          *ContainerAllocations
+	CPUPolicy            *v1.ResourceResizeRestartPolicy
+	MemPolicy            *v1.ResourceResizeRestartPolicy
+	RestartCount         int32
+	CpusAllowedListValue string
 }
 
 type containerPatch struct {
@@ -418,7 +420,7 @@ func WaitForPodResizeActuation(ctx context.Context, f *framework.Framework, podC
 	gomega.Eventually(ctx, waitForContainerRestart, timeouts.PodStartShort, timeouts.Poll).
 		WithArguments(podClient, pod, expectedContainers, initialContainers, isRollback).
 		ShouldNot(gomega.HaveOccurred(), "failed waiting for expected container restart")
-		// Verify Pod Containers Cgroup Values
+	// Verify Pod Containers Cgroup Values
 	gomega.Eventually(ctx, VerifyPodContainersCgroupValues, timeouts.PodStartShort, timeouts.Poll).
 		WithArguments(f, patchedPod, expectedContainers).
 		ShouldNot(gomega.HaveOccurred(), "failed to verify container cgroup values to match expected")
@@ -455,4 +457,59 @@ func ResizeContainerPatch(containers []ResizableContainerInfo) (string, error) {
 	}
 
 	return string(patchBytes), nil
+}
+
+// TODO TO replace with cpuset method
+// Credits github.com/prometheus/procfs/proc_status.go
+func calcCpusAllowedList(cpuString string) []uint64 {
+	s := strings.Split(cpuString, ",")
+
+	var g []uint64
+
+	for _, cpu := range s {
+		// parse cpu ranges, example: 1-3=[1,2,3]
+		if l := strings.Split(strings.TrimSpace(cpu), "-"); len(l) > 1 {
+			startCPU, _ := strconv.ParseUint(l[0], 10, 64)
+			endCPU, _ := strconv.ParseUint(l[1], 10, 64)
+
+			for i := startCPU; i <= endCPU; i++ {
+				g = append(g, i)
+			}
+		} else if len(l) == 1 {
+			cpu, _ := strconv.ParseUint(l[0], 10, 64)
+			g = append(g, cpu)
+		}
+
+	}
+
+	sort.Slice(g, func(i, j int) bool { return g[i] < g[j] })
+	return g
+}
+
+func VerifyPodContainersCpusAllowedListValue(f *framework.Framework, pod *v1.Pod, wantCtrs []ResizableContainerInfo) error {
+	ginkgo.GinkgoHelper()
+	verifyCpusAllowedListValue := func(cName, expectedCpusAllowedListValue string) error {
+		mycmd := "grep Cpus_allowed_list /proc/self/status | cut -f2"
+		calValue, _, err := ExecCommandInContainerWithFullOutput(f, pod.Name, cName, "/bin/sh", "-c", mycmd)
+		framework.Logf("Namespace %s Pod %s Container %s - looking for Cpus allowed list value %s in /proc/self/status",
+			pod.Namespace, pod.Name, cName, expectedCpusAllowedListValue)
+		if err != nil {
+			return fmt.Errorf("failed to find expected value '%s' in container '%s' Cpus allowred list '/proc/self/status'", cName, expectedCpusAllowedListValue)
+		}
+		cpuTotalValue := strconv.Itoa(len(calcCpusAllowedList(calValue)))
+		if cpuTotalValue != expectedCpusAllowedListValue {
+			return fmt.Errorf("container '%s' cgroup value '%s' results to total CPUs '%s' not equal to expected '%s'", cName, calValue, cpuTotalValue, expectedCpusAllowedListValue)
+		}
+		return nil
+	}
+	for _, ci := range wantCtrs {
+		if ci.CpusAllowedListValue == "" {
+			continue
+		}
+		err := verifyCpusAllowedListValue(ci.Name, ci.CpusAllowedListValue)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

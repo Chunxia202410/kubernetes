@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package node
+package e2enode
 
 import (
 	"context"
@@ -23,21 +23,25 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	clientset "k8s.io/client-go/kubernetes"
+	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
+	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager"
 	"k8s.io/kubernetes/test/e2e/feature"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
+	e2enodekubelet "k8s.io/kubernetes/test/e2e_node/kubeletconfig"
 	testutils "k8s.io/kubernetes/test/utils"
-
-	"github.com/onsi/ginkgo/v2"
-	"github.com/onsi/gomega"
-	v1 "k8s.io/api/core/v1"
+	admissionapi "k8s.io/pod-security-admission/api"
+	"k8s.io/utils/cpuset"
 )
 
 const (
@@ -116,7 +120,77 @@ func removeExtendedResource(clientSet clientset.Interface, nodeName, extendedRes
 	}).WithTimeout(30 * time.Second).WithPolling(time.Second).ShouldNot(gomega.HaveOccurred())
 }
 
-func doPodResizeTests(f *framework.Framework) {
+func cpuManagerPolicyKubeletConfig(ctx context.Context, f *framework.Framework, oldCfg *kubeletconfig.KubeletConfiguration, cpuManagerPolicyName string, cpuManagerPolicyOptions map[string]string) {
+	if cpuManagerPolicyName != "" {
+		if cpuManagerPolicyOptions != nil {
+			func() {
+				var cpuAlloc int64
+				for policyOption, policyOptionValue := range cpuManagerPolicyOptions {
+					if policyOption == cpumanager.FullPCPUsOnlyOption && policyOptionValue == "true" {
+						_, cpuAlloc, _ = getLocalNodeCPUDetails(ctx, f)
+						smtLevel := getSMTLevel()
+
+						// strict SMT alignment is trivially verified and granted on non-SMT systems
+						if smtLevel < 2 {
+							e2eskipper.Skipf("Skipping Pod Resize along side CPU Manager %s tests since SMT disabled", policyOption)
+						}
+
+						// our tests want to allocate a full core, so we need at last 2*2=4 virtual cpus
+						if cpuAlloc < int64(smtLevel*2) {
+							e2eskipper.Skipf("Skipping Pod resize along side CPU Manager %s tests since the CPU capacity < 4", policyOption)
+						}
+
+						framework.Logf("SMT level %d", smtLevel)
+						return
+					}
+				}
+			}()
+
+			// TODO: we assume the first available CPUID is 0, which is pretty fair, but we should probably
+			// check what we do have in the node.
+			newCfg := configureCPUManagerInKubelet(oldCfg,
+				&cpuManagerKubeletArguments{
+					policyName:              cpuManagerPolicyName,
+					reservedSystemCPUs:      cpuset.New(0),
+					enableCPUManagerOptions: true,
+					options:                 cpuManagerPolicyOptions,
+				},
+			)
+			updateKubeletConfig(ctx, f, newCfg, true)
+		} else {
+			var cpuCap int64
+			cpuCap, _, _ = getLocalNodeCPUDetails(ctx, f)
+			// Skip CPU Manager tests altogether if the CPU capacity < 2.
+			if cpuCap < 2 {
+				e2eskipper.Skipf("Skipping Pod Resize alongside CPU Manager tests since the CPU capacity < 2")
+			}
+			// Enable CPU Manager in the kubelet.
+			newCfg := configureCPUManagerInKubelet(oldCfg, &cpuManagerKubeletArguments{
+				policyName:         cpuManagerPolicyName,
+				reservedSystemCPUs: cpuset.CPUSet{},
+			})
+			updateKubeletConfig(ctx, f, newCfg, true)
+		}
+	}
+}
+
+type cpuManagerPolicyConfig struct {
+	name    string
+	title   string
+	options map[string]string
+}
+
+func doPodResizeTests(f *framework.Framework, policy cpuManagerPolicyConfig) {
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
+	var oldCfg *kubeletconfig.KubeletConfiguration
+	ginkgo.BeforeEach(func(ctx context.Context) {
+		var err error
+		if oldCfg == nil {
+			oldCfg, err = e2enodekubelet.GetCurrentKubeletConfig(ctx, framework.TestContext.NodeName, "", false, framework.TestContext.StandaloneMode)
+			framework.ExpectNoError(err)
+		}
+	})
+
 	type testCase struct {
 		name                string
 		containers          []e2epod.ResizableContainerInfo
@@ -849,15 +923,422 @@ func doPodResizeTests(f *framework.Framework) {
 			},
 			addExtendedResource: true,
 		},
+		{
+			name: "Guaranteed QoS pod, one container - increase CPU & memory, with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "200Mi", MemLim: "200Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "2",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"4","memory":"400Mi"},"limits":{"cpu":"4","memory":"400Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "400Mi", MemLim: "400Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "4",
+				},
+			},
+		},
+		{
+			name: "Burstable QoS pod, three containers - no change for c1, decrease c2 resources, decrease c3 (net decrease for pod)",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "100m", CPULim: "200m", MemReq: "100Mi", MemLim: "200Mi"},
+					CPUPolicy: &doRestart,
+					MemPolicy: &doRestart,
+				},
+				{
+					Name:      "c2",
+					Resources: &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "200Mi", MemLim: "300Mi"},
+					CPUPolicy: &doRestart,
+					MemPolicy: &noRestart,
+				},
+				{
+					Name:      "c3",
+					Resources: &e2epod.ContainerResources{CPUReq: "300m", CPULim: "400m", MemReq: "300Mi", MemLim: "400Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &doRestart,
+				},
+			},
+			patchString: `{"spec":{"containers":[
+						{"name":"c2", "resources":{"requests":{"cpu":"1","memory":"150Mi"},"limits":{"cpu":"1","memory":"250Mi"}}},
+						{"name":"c3", "resources":{"requests":{"cpu":"100m","memory":"100Mi"},"limits":{"cpu":"200m","memory":"200Mi"}}}
+					]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "100m", CPULim: "200m", MemReq: "100Mi", MemLim: "200Mi"},
+					CPUPolicy: &doRestart,
+					MemPolicy: &doRestart,
+				},
+				{
+					Name:         "c2",
+					Resources:    &e2epod.ContainerResources{CPUReq: "1", CPULim: "1", MemReq: "150Mi", MemLim: "250Mi"},
+					CPUPolicy:    &doRestart,
+					MemPolicy:    &noRestart,
+					RestartCount: 1,
+				},
+				{
+					Name:         "c3",
+					Resources:    &e2epod.ContainerResources{CPUReq: "100m", CPULim: "200m", MemReq: "100Mi", MemLim: "200Mi"},
+					CPUPolicy:    &noRestart,
+					MemPolicy:    &doRestart,
+					RestartCount: 1,
+				},
+			},
+		},
+		{
+			name: "Burstable QoS pod, three containers - no change for c1, increase c2 resources, decrease c3 (net increase for pod)",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "100m", CPULim: "200m", MemReq: "100Mi", MemLim: "200Mi"},
+					CPUPolicy: &doRestart,
+					MemPolicy: &doRestart,
+				},
+				{
+					Name:      "c2",
+					Resources: &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "200Mi", MemLim: "300Mi"},
+					CPUPolicy: &doRestart,
+					MemPolicy: &noRestart,
+				},
+				{
+					Name:      "c3",
+					Resources: &e2epod.ContainerResources{CPUReq: "300m", CPULim: "400m", MemReq: "300Mi", MemLim: "400Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &doRestart,
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c2", "resources":{"requests":{"cpu":"4","memory":"250Mi"},"limits":{"cpu":"4","memory":"350Mi"}}},
+							{"name":"c3", "resources":{"requests":{"cpu":"100m","memory":"100Mi"},"limits":{"cpu":"200m","memory":"200Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "100m", CPULim: "200m", MemReq: "100Mi", MemLim: "200Mi"},
+					CPUPolicy: &doRestart,
+					MemPolicy: &doRestart,
+				},
+				{
+					Name:         "c2",
+					Resources:    &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "250Mi", MemLim: "350Mi"},
+					CPUPolicy:    &doRestart,
+					MemPolicy:    &noRestart,
+					RestartCount: 1,
+				},
+				{
+					Name:         "c3",
+					Resources:    &e2epod.ContainerResources{CPUReq: "100m", CPULim: "200m", MemReq: "100Mi", MemLim: "200Mi"},
+					CPUPolicy:    &noRestart,
+					MemPolicy:    &doRestart,
+					RestartCount: 1,
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - decrease CPU & increase memory",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "100m", CPULim: "100m", MemReq: "200Mi", MemLim: "200Mi"},
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"50m","memory":"300Mi"},"limits":{"cpu":"50m","memory":"300Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "50m", CPULim: "50m", MemReq: "300Mi", MemLim: "300Mi"},
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - decrease CPU & memory, with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "500Mi", MemLim: "500Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "4",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"2","memory":"250Mi"},"limits":{"cpu":"2","memory":"250Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "250Mi", MemLim: "250Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "2",
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - decrease CPU & memory, with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "500Mi", MemLim: "500Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "4",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"2","memory":"250Mi"},"limits":{"cpu":"2","memory":"250Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "250Mi", MemLim: "250Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "2",
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - increase CPU & decrease memory, with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "200Mi", MemLim: "200Mi"},
+					CpusAllowedListValue: "2",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"4","memory":"100Mi"},"limits":{"cpu":"4","memory":"100Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "100Mi", MemLim: "100Mi"},
+					CpusAllowedListValue: "4",
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - increase CPU & decrease memory, with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "200Mi", MemLim: "200Mi"},
+					CpusAllowedListValue: "2",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"4","memory":"100Mi"},"limits":{"cpu":"4","memory":"100Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "100Mi", MemLim: "100Mi"},
+					CpusAllowedListValue: "4",
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - increase CPU & memory, with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "200Mi", MemLim: "200Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "2",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"4","memory":"400Mi"},"limits":{"cpu":"4","memory":"400Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "400Mi", MemLim: "400Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "4",
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - increase CPU (NotRequired) & memory (RestartContainer), with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "200Mi", MemLim: "200Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &doRestart,
+					CpusAllowedListValue: "2",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"4","memory":"400Mi"},"limits":{"cpu":"4","memory":"400Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "400Mi", MemLim: "400Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &doRestart,
+					CpusAllowedListValue: "4",
+					RestartCount:         1,
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, one container - increase CPU (NotRequired) & memory (RestartContainer), with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "200Mi", MemLim: "200Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &doRestart,
+					CpusAllowedListValue: "2",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"4","memory":"400Mi"},"limits":{"cpu":"4","memory":"400Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "400Mi", MemLim: "400Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &doRestart,
+					CpusAllowedListValue: "4",
+					RestartCount:         1,
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, three containers (c1, c2, c3) - increase CPU (c1,c3) and memory (c2) ; decrease CPU (c2) and memory (c1,c3)",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "100m", CPULim: "100m", MemReq: "100Mi", MemLim: "100Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &noRestart,
+				},
+				{
+					Name:      "c2",
+					Resources: &e2epod.ContainerResources{CPUReq: "200m", CPULim: "200m", MemReq: "200Mi", MemLim: "200Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &noRestart,
+				},
+				{
+					Name:      "c3",
+					Resources: &e2epod.ContainerResources{CPUReq: "300m", CPULim: "300m", MemReq: "300Mi", MemLim: "300Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &noRestart,
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"140m","memory":"50Mi"},"limits":{"cpu":"140m","memory":"50Mi"}}},
+							{"name":"c2", "resources":{"requests":{"cpu":"150m","memory":"240Mi"},"limits":{"cpu":"150m","memory":"240Mi"}}},
+							{"name":"c3", "resources":{"requests":{"cpu":"340m","memory":"250Mi"},"limits":{"cpu":"340m","memory":"250Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:      "c1",
+					Resources: &e2epod.ContainerResources{CPUReq: "140m", CPULim: "140m", MemReq: "50Mi", MemLim: "50Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &noRestart,
+				},
+				{
+					Name:      "c2",
+					Resources: &e2epod.ContainerResources{CPUReq: "150m", CPULim: "150m", MemReq: "240Mi", MemLim: "240Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &noRestart,
+				},
+				{
+					Name:      "c3",
+					Resources: &e2epod.ContainerResources{CPUReq: "340m", CPULim: "340m", MemReq: "250Mi", MemLim: "250Mi"},
+					CPUPolicy: &noRestart,
+					MemPolicy: &noRestart,
+				},
+			},
+		},
+		{
+			name: "Guaranteed QoS pod, three containers (c1, c2, c3) - increase CPU (c1,c3) and memory (c2) ; decrease CPU (c2) and memory (c1,c3), with integer CPU requests",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "100Mi", MemLim: "100Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "2",
+				},
+				{
+					Name:                 "c2",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "200Mi", MemLim: "200Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "4",
+				},
+				{
+					Name:                 "c3",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "300Mi", MemLim: "300Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "2",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+							{"name":"c1", "resources":{"requests":{"cpu":"4","memory":"50Mi"},"limits":{"cpu":"4","memory":"50Mi"}}},
+							{"name":"c2", "resources":{"requests":{"cpu":"2","memory":"240Mi"},"limits":{"cpu":"2","memory":"240Mi"}}},
+							{"name":"c3", "resources":{"requests":{"cpu":"4","memory":"250Mi"},"limits":{"cpu":"4","memory":"250Mi"}}}
+						]}}`,
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name:                 "c1",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "50Mi", MemLim: "50Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "4",
+				},
+				{
+					Name:                 "c2",
+					Resources:            &e2epod.ContainerResources{CPUReq: "2", CPULim: "2", MemReq: "240Mi", MemLim: "240Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "2",
+				},
+				{
+					Name:                 "c3",
+					Resources:            &e2epod.ContainerResources{CPUReq: "4", CPULim: "4", MemReq: "250Mi", MemLim: "250Mi"},
+					CPUPolicy:            &noRestart,
+					MemPolicy:            &noRestart,
+					CpusAllowedListValue: "4",
+				},
+			},
+		},
 	}
 
 	timeouts := framework.NewTimeoutContext()
 
 	for idx := range tests {
 		tc := tests[idx]
-		ginkgo.It(tc.name, func(ctx context.Context) {
+		ginkgo.It(tc.name+policy.title, func(ctx context.Context) {
+			cpuManagerPolicyKubeletConfig(ctx, f, oldCfg, policy.name, policy.options)
+
 			podClient := e2epod.NewPodClient(f)
 			var testPod, patchedPod *v1.Pod
+
 			var pErr error
 
 			tStamp := strconv.Itoa(time.Now().Nanosecond())
@@ -897,6 +1378,15 @@ func doPodResizeTests(f *framework.Framework) {
 			e2epod.VerifyPodStatusResources(newPod, tc.containers)
 			ginkgo.By("verifying initial cgroup config are as expected")
 			framework.ExpectNoError(e2epod.VerifyPodContainersCgroupValues(ctx, f, newPod, tc.containers))
+			// TODO make this dynamic depending on Policy Name, Resources input and topology of target
+			// machine.
+			// For the moment skip below if CPU Manager Policy is set to none
+			if policy.name == string(cpumanager.PolicyStatic) {
+				ginkgo.By("verifying initial pod Cpus allowed list value")
+				gomega.Eventually(ctx, e2epod.VerifyPodContainersCpusAllowedListValue, timeouts.PodStartShort, timeouts.Poll).
+					WithArguments(f, newPod, tc.containers).
+					Should(gomega.BeNil(), "failed to verify initial Pod CpusAllowedListValue")
+			}
 
 			patchAndVerify := func(patchString string, expectedContainers []e2epod.ResizableContainerInfo, initialContainers []e2epod.ResizableContainerInfo, opStr string, isRollback bool) {
 				ginkgo.By(fmt.Sprintf("patching pod for %s", opStr))
@@ -924,6 +1414,15 @@ func doPodResizeTests(f *framework.Framework) {
 				gomega.Eventually(ctx, e2epod.VerifyPodAllocations, timeouts.PodStartShort, timeouts.Poll).
 					WithArguments(resizedPod, expectedContainers).
 					Should(gomega.BeNil(), "failed to verify Pod allocations for resizedPod")
+				// TODO make this dynamic depending on Policy Name, Resources input and topology of target
+				// machine.
+				// For the moment skip below if CPU Manager Policy is set to none
+				if policy.name == string(cpumanager.PolicyStatic) {
+					ginkgo.By("verifying pod Cpus allowed list value after resize")
+					gomega.Eventually(ctx, e2epod.VerifyPodContainersCpusAllowedListValue, timeouts.PodStartShort, timeouts.Poll).
+						WithArguments(f, resizedPod, tc.expected).
+						Should(gomega.BeNil(), "failed to verify Pod CpusAllowedListValue for resizedPod")
+				}
 			}
 
 			patchAndVerify(tc.patchString, tc.expected, tc.containers, "resize", false)
@@ -934,12 +1433,30 @@ func doPodResizeTests(f *framework.Framework) {
 			patchAndVerify(rbPatchStr, tc.containers, tc.expected, "rollback", true)
 
 			ginkgo.By("deleting pod")
-			podClient.DeleteSync(ctx, newPod.Name, metav1.DeleteOptions{}, timeouts.PodDelete)
+			deletePodSyncByName(ctx, f, newPod.Name)
+			// we need to wait for all containers to really be gone so cpumanager reconcile loop will not rewrite the cpu_manager_state.
+			// this is in turn needed because we will have an unavoidable (in the current framework) race with the
+			// reconcile loop which will make our attempt to delete the state file and to restore the old config go haywire
+			waitForAllContainerRemoval(ctx, newPod.Name, newPod.Namespace)
 		})
 	}
+
+	ginkgo.AfterEach(func(ctx context.Context) {
+		updateKubeletConfig(ctx, f, oldCfg, true)
+	})
+
 }
 
-func doPodResizeErrorTests(f *framework.Framework) {
+func doPodResizeErrorTests(f *framework.Framework, policy cpuManagerPolicyConfig) {
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
+	var oldCfg *kubeletconfig.KubeletConfiguration
+	ginkgo.BeforeEach(func(ctx context.Context) {
+		var err error
+		if oldCfg == nil {
+			oldCfg, err = e2enodekubelet.GetCurrentKubeletConfig(ctx, framework.TestContext.NodeName, "", false, framework.TestContext.StandaloneMode)
+			framework.ExpectNoError(err)
+		}
+	})
 
 	type testCase struct {
 		name        string
@@ -951,7 +1468,7 @@ func doPodResizeErrorTests(f *framework.Framework) {
 
 	tests := []testCase{
 		{
-			name: "BestEffort pod - try requesting memory, expect error",
+			name: "BestEffort QoS pod, one container - try requesting memory, expect error",
 			containers: []e2epod.ResizableContainerInfo{
 				{
 					Name: "c1",
@@ -967,13 +1484,42 @@ func doPodResizeErrorTests(f *framework.Framework) {
 				},
 			},
 		},
+		{
+			name: "BestEffort QoS pod, three containers - try requesting memory for c1, expect error",
+			containers: []e2epod.ResizableContainerInfo{
+				{
+					Name: "c1",
+				},
+				{
+					Name: "c2",
+				},
+				{
+					Name: "c3",
+				},
+			},
+			patchString: `{"spec":{"containers":[
+						{"name":"c1", "resources":{"requests":{"memory":"400Mi"}}}
+					]}}`,
+			patchError: "Pod QoS is immutable",
+			expected: []e2epod.ResizableContainerInfo{
+				{
+					Name: "c1",
+				},
+				{
+					Name: "c2",
+				},
+				{
+					Name: "c3",
+				},
+			},
+		},
 	}
 
 	timeouts := framework.NewTimeoutContext()
 
 	for idx := range tests {
 		tc := tests[idx]
-		ginkgo.It(tc.name, func(ctx context.Context) {
+		ginkgo.It(tc.name+policy.title, func(ctx context.Context) {
 			podClient := e2epod.NewPodClient(f)
 			var testPod, patchedPod *v1.Pod
 			var pErr error
@@ -986,6 +1532,10 @@ func doPodResizeErrorTests(f *framework.Framework) {
 
 			ginkgo.By("creating pod")
 			newPod := podClient.CreateSync(ctx, testPod)
+
+			perr := e2epod.WaitForPodCondition(ctx, f.ClientSet, newPod.Namespace, newPod.Name, "Ready", timeouts.PodStartSlow, testutils.PodRunningReady)
+			framework.ExpectNoError(perr, "pod %s/%s did not go running", newPod.Namespace, newPod.Name)
+			framework.Logf("pod %s/%s running", newPod.Namespace, newPod.Name)
 
 			ginkgo.By("verifying initial pod resources, allocations, and policy are as expected")
 			e2epod.VerifyPodResources(newPod, tc.containers)
@@ -1012,10 +1562,19 @@ func doPodResizeErrorTests(f *framework.Framework) {
 				WithArguments(patchedPod, tc.expected).
 				Should(gomega.BeNil(), "failed to verify Pod allocations for patchedPod")
 
-			ginkgo.By("deleting pod")
-			podClient.DeleteSync(ctx, newPod.Name, metav1.DeleteOptions{}, timeouts.PodDelete)
+			deletePodSyncByName(ctx, f, newPod.Name)
+			// we need to wait for all containers to really be gone so cpumanager reconcile loop will not rewrite the cpu_manager_state.
+			// this is in turn needed because we will have an unavoidable (in the current framework) race with the
+			// reconcile loop which will make our attempt to delete the state file and to restore the old config go haywire
+			waitForAllContainerRemoval(ctx, newPod.Name, newPod.Namespace)
+
 		})
 	}
+
+	ginkgo.AfterEach(func(ctx context.Context) {
+		updateKubeletConfig(ctx, f, oldCfg, true)
+	})
+
 }
 
 // NOTE: Pod resize scheduler resource quota tests are out of scope in e2e_node tests,
@@ -1030,13 +1589,145 @@ var _ = SIGDescribe("Pod InPlace Resize Container", framework.WithSerial(), feat
 	f := framework.NewDefaultFramework("pod-resize-tests")
 
 	ginkgo.BeforeEach(func(ctx context.Context) {
-		node, err := e2enode.GetRandomReadySchedulableNode(ctx, f.ClientSet)
-		framework.ExpectNoError(err)
-		if framework.NodeOSDistroIs("windows") || e2enode.IsARM64(node) {
+		node := getLocalNode(ctx, f)
+		if !e2enode.NodeSupportsInPlacePodVerticalScaling(node) {
 			e2eskipper.Skipf("runtime does not support InPlacePodVerticalScaling -- skipping")
 		}
 	})
 
-	doPodResizeTests(f)
-	doPodResizeErrorTests(f)
+	policiesGeneralAvailability := []cpuManagerPolicyConfig{
+		{
+			name:  string(cpumanager.PolicyNone),
+			title: "",
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with no options",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "false",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "false",
+				cpumanager.AlignBySocketOption:             "false",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+	}
+
+	policiesBeta := []cpuManagerPolicyConfig{
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with FullPCPUsOnlyOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "true",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "false",
+				cpumanager.AlignBySocketOption:             "false",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+	}
+	/*policiesAlpha := []cpuManagerPolicyConfig{
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with DistributeCPUsAcrossNUMAOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "false",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "true",
+				cpumanager.AlignBySocketOption:             "false",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with FullPCPUsOnlyOption, DistributeCPUsAcrossNUMAOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "true",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "true",
+				cpumanager.AlignBySocketOption:             "false",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with AlignBySocketOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "false",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "false",
+				cpumanager.AlignBySocketOption:             "true",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with FullPCPUsOnlyOption, AlignBySocketOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "true",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "false",
+				cpumanager.AlignBySocketOption:             "true",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with DistributeCPUsAcrossNUMAOption, AlignBySocketOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "false",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "true",
+				cpumanager.AlignBySocketOption:             "true",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with FullPCPUsOnlyOption, DistributeCPUsAcrossNUMAOption, AlignBySocketOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "true",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "true",
+				cpumanager.AlignBySocketOption:             "true",
+				cpumanager.DistributeCPUsAcrossCoresOption: "false",
+			},
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with DistributeCPUsAcrossCoresOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "false",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "false",
+				cpumanager.AlignBySocketOption:             "false",
+				cpumanager.DistributeCPUsAcrossCoresOption: "true",
+			},
+		},
+		{
+			name:  string(cpumanager.PolicyStatic),
+			title: ", alongside CPU Manager Static Policy with DistributeCPUsAcrossCoresOption, AlignBySocketOption",
+			options: map[string]string{
+				cpumanager.FullPCPUsOnlyOption:             "false",
+				cpumanager.DistributeCPUsAcrossNUMAOption:  "false",
+				cpumanager.AlignBySocketOption:             "true",
+				cpumanager.DistributeCPUsAcrossCoresOption: "true",
+			},
+		},
+	}*/
+
+	for idp := range policiesGeneralAvailability {
+		doPodResizeTests(f, policiesGeneralAvailability[idp])
+	}
+
+	for idp := range policiesBeta {
+		doPodResizeTests(f, policiesBeta[idp])
+	}
+
+	/*for idp := range policiesAlpha {
+		doPodResizeTests(f,policiesAlpha[idp])
+	}*/
+
+	for idp := range policiesGeneralAvailability {
+		doPodResizeErrorTests(f, policiesGeneralAvailability[idp])
+	}
+
+	for idp := range policiesBeta {
+		doPodResizeErrorTests(f, policiesBeta[idp])
+	}
+
+	/*for idp := range policiesAlpha {
+		doPodResizeErrorTests(f, policiesAlpha[idp])
+	}*/
 })

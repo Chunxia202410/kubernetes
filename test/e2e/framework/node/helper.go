@@ -19,14 +19,17 @@ package node
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
+	semver "github.com/blang/semver/v4"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
+	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 
 	"k8s.io/kubernetes/test/e2e/framework"
 	testutils "k8s.io/kubernetes/test/utils"
@@ -173,5 +176,24 @@ func IsARM64(node *v1.Node) bool {
 		return arch == "arm64"
 	}
 
+	return false
+}
+
+// supportsInPlacePodVerticalScaling returns true if the nodes container runtime version
+// is equal or larger than minimum container runtime version, else returns false.
+func NodeSupportsInPlacePodVerticalScaling(node *v1.Node) bool {
+	if framework.NodeOSDistroIs("windows") || IsARM64(node) {
+		return false
+	} else {
+		re := regexp.MustCompile("containerd://(.*)")
+		match := re.FindStringSubmatch(node.Status.NodeInfo.ContainerRuntimeVersion)
+		if len(match) != 2 {
+			return false
+		}
+		// TODO(InPlacePodVerticalScaling): Update when RuntimeHandlerFeature for pod resize have been implemented
+		if ver, verr := semver.ParseTolerant(match[1]); verr == nil {
+			return ver.Compare(semver.MustParse(e2epod.MinContainerRuntimeVersion)) >= 0
+		}
+	}
 	return false
 }

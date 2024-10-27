@@ -323,7 +323,7 @@ var _ = SIGDescribe(framework.WithSerial(), "Pod InPlace Resize Container (sched
 	ginkgo.BeforeEach(func(ctx context.Context) {
 		node, err := e2enode.GetRandomReadySchedulableNode(ctx, f.ClientSet)
 		framework.ExpectNoError(err)
-		if framework.NodeOSDistroIs("windows") || e2enode.IsARM64(node) {
+		if !e2enode.NodeSupportsInPlacePodVerticalScaling(node) {
 			e2eskipper.Skipf("runtime does not support InPlacePodVerticalScaling -- skipping")
 		}
 	})
