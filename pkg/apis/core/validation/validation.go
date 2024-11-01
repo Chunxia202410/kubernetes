@@ -29,6 +29,7 @@ import (
 	"sync"
 	"unicode"
 	"unicode/utf8"
+	"k8s.io/klog/v2"
 
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
@@ -58,6 +59,7 @@ import (
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/fieldpath"
 	netutils "k8s.io/utils/net"
+	"k8s.io/utils/cpuset"
 )
 
 const isNegativeErrorMsg string = apimachineryvalidation.IsNegativeErrorMsg
@@ -3068,52 +3070,52 @@ func validatePodResourceClaim(podMeta *metav1.ObjectMeta, claim core.PodResource
 	return allErrs
 }
 
-func validateLivenessProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+func validateLivenessProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if probe == nil {
 		return allErrs
 	}
-	allErrs = append(allErrs, validateProbe(probe, gracePeriod, fldPath, opts)...)
+	allErrs = append(allErrs, validateProbe(probe, gracePeriod, fldPath)...)
 	if probe.SuccessThreshold != 1 {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("successThreshold"), probe.SuccessThreshold, "must be 1"))
 	}
 	return allErrs
 }
 
-func validateReadinessProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+func validateReadinessProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if probe == nil {
 		return allErrs
 	}
-	allErrs = append(allErrs, validateProbe(probe, gracePeriod, fldPath, opts)...)
+	allErrs = append(allErrs, validateProbe(probe, gracePeriod, fldPath)...)
 	if probe.TerminationGracePeriodSeconds != nil {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("terminationGracePeriodSeconds"), probe.TerminationGracePeriodSeconds, "must not be set for readinessProbes"))
 	}
 	return allErrs
 }
 
-func validateStartupProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+func validateStartupProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if probe == nil {
 		return allErrs
 	}
-	allErrs = append(allErrs, validateProbe(probe, gracePeriod, fldPath, opts)...)
+	allErrs = append(allErrs, validateProbe(probe, gracePeriod, fldPath)...)
 	if probe.SuccessThreshold != 1 {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("successThreshold"), probe.SuccessThreshold, "must be 1"))
 	}
 	return allErrs
 }
 
-func validateProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+func validateProbe(probe *core.Probe, gracePeriod *int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
 	if probe == nil {
 		return allErrs
 	}
-	allErrs = append(allErrs, validateHandler(handlerFromProbe(&probe.ProbeHandler), gracePeriod, fldPath, opts)...)
+	allErrs = append(allErrs, validateHandler(handlerFromProbe(&probe.ProbeHandler), gracePeriod, fldPath)...)
 
 	allErrs = append(allErrs, ValidateNonnegativeField(int64(probe.InitialDelaySeconds), fldPath.Child("initialDelaySeconds"))...)
 	allErrs = append(allErrs, ValidateNonnegativeField(int64(probe.TimeoutSeconds), fldPath.Child("timeoutSeconds"))...)
@@ -3169,21 +3171,14 @@ func handlerFromLifecycle(lh *core.LifecycleHandler) commonHandler {
 	}
 }
 
-func validateSleepAction(sleep *core.SleepAction, gracePeriod *int64, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+func validateSleepAction(sleep *core.SleepAction, gracePeriod *int64, fldPath *field.Path) field.ErrorList {
 	allErrors := field.ErrorList{}
 	// We allow gracePeriod to be nil here because the pod in which this SleepAction
 	// is defined might have an invalid grace period defined, and we don't want to
 	// flag another error here when the real problem will already be flagged.
-	if opts.AllowPodLifecycleSleepActionZeroValue {
-		if gracePeriod != nil && (sleep.Seconds < 0 || sleep.Seconds > *gracePeriod) {
-			invalidStr := fmt.Sprintf("must be non-negative and less than terminationGracePeriodSeconds (%d)", *gracePeriod)
-			allErrors = append(allErrors, field.Invalid(fldPath, sleep.Seconds, invalidStr))
-		}
-	} else {
-		if gracePeriod != nil && (sleep.Seconds <= 0 || sleep.Seconds > *gracePeriod) {
-			invalidStr := fmt.Sprintf("must be greater than 0 and less than terminationGracePeriodSeconds (%d). Enable AllowPodLifecycleSleepActionZeroValue feature gate for zero sleep.", *gracePeriod)
-			allErrors = append(allErrors, field.Invalid(fldPath, sleep.Seconds, invalidStr))
-		}
+	if gracePeriod != nil && sleep.Seconds <= 0 || sleep.Seconds > *gracePeriod {
+		invalidStr := fmt.Sprintf("must be greater than 0 and less than terminationGracePeriodSeconds (%d)", *gracePeriod)
+		allErrors = append(allErrors, field.Invalid(fldPath, sleep.Seconds, invalidStr))
 	}
 	return allErrors
 }
@@ -3296,7 +3291,7 @@ func validateTCPSocketAction(tcp *core.TCPSocketAction, fldPath *field.Path) fie
 func validateGRPCAction(grpc *core.GRPCAction, fldPath *field.Path) field.ErrorList {
 	return ValidatePortNumOrName(intstr.FromInt32(grpc.Port), fldPath.Child("port"))
 }
-func validateHandler(handler commonHandler, gracePeriod *int64, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+func validateHandler(handler commonHandler, gracePeriod *int64, fldPath *field.Path) field.ErrorList {
 	numHandlers := 0
 	allErrors := field.ErrorList{}
 	if handler.Exec != nil {
@@ -3336,7 +3331,7 @@ func validateHandler(handler commonHandler, gracePeriod *int64, fldPath *field.P
 			allErrors = append(allErrors, field.Forbidden(fldPath.Child("sleep"), "may not specify more than 1 handler type"))
 		} else {
 			numHandlers++
-			allErrors = append(allErrors, validateSleepAction(handler.Sleep, gracePeriod, fldPath.Child("sleep"), opts)...)
+			allErrors = append(allErrors, validateSleepAction(handler.Sleep, gracePeriod, fldPath.Child("sleep"))...)
 		}
 	}
 	if numHandlers == 0 {
@@ -3345,13 +3340,13 @@ func validateHandler(handler commonHandler, gracePeriod *int64, fldPath *field.P
 	return allErrors
 }
 
-func validateLifecycle(lifecycle *core.Lifecycle, gracePeriod *int64, fldPath *field.Path, opts PodValidationOptions) field.ErrorList {
+func validateLifecycle(lifecycle *core.Lifecycle, gracePeriod *int64, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 	if lifecycle.PostStart != nil {
-		allErrs = append(allErrs, validateHandler(handlerFromLifecycle(lifecycle.PostStart), gracePeriod, fldPath.Child("postStart"), opts)...)
+		allErrs = append(allErrs, validateHandler(handlerFromLifecycle(lifecycle.PostStart), gracePeriod, fldPath.Child("postStart"))...)
 	}
 	if lifecycle.PreStop != nil {
-		allErrs = append(allErrs, validateHandler(handlerFromLifecycle(lifecycle.PreStop), gracePeriod, fldPath.Child("preStop"), opts)...)
+		allErrs = append(allErrs, validateHandler(handlerFromLifecycle(lifecycle.PreStop), gracePeriod, fldPath.Child("preStop"))...)
 	}
 	return allErrs
 }
@@ -3530,11 +3525,11 @@ func validateInitContainers(containers []core.Container, regularContainers []cor
 		switch {
 		case restartAlways:
 			if ctr.Lifecycle != nil {
-				allErrs = append(allErrs, validateLifecycle(ctr.Lifecycle, gracePeriod, idxPath.Child("lifecycle"), opts)...)
+				allErrs = append(allErrs, validateLifecycle(ctr.Lifecycle, gracePeriod, idxPath.Child("lifecycle"))...)
 			}
-			allErrs = append(allErrs, validateLivenessProbe(ctr.LivenessProbe, gracePeriod, idxPath.Child("livenessProbe"), opts)...)
-			allErrs = append(allErrs, validateReadinessProbe(ctr.ReadinessProbe, gracePeriod, idxPath.Child("readinessProbe"), opts)...)
-			allErrs = append(allErrs, validateStartupProbe(ctr.StartupProbe, gracePeriod, idxPath.Child("startupProbe"), opts)...)
+			allErrs = append(allErrs, validateLivenessProbe(ctr.LivenessProbe, gracePeriod, idxPath.Child("livenessProbe"))...)
+			allErrs = append(allErrs, validateReadinessProbe(ctr.ReadinessProbe, gracePeriod, idxPath.Child("readinessProbe"))...)
+			allErrs = append(allErrs, validateStartupProbe(ctr.StartupProbe, gracePeriod, idxPath.Child("startupProbe"))...)
 
 		default:
 			// These fields are disallowed for init containers.
@@ -3662,11 +3657,11 @@ func validateContainers(containers []core.Container, volumes map[string]core.Vol
 		// Regular init container and ephemeral container validation will return
 		// field.Forbidden() for these paths.
 		if ctr.Lifecycle != nil {
-			allErrs = append(allErrs, validateLifecycle(ctr.Lifecycle, gracePeriod, path.Child("lifecycle"), opts)...)
+			allErrs = append(allErrs, validateLifecycle(ctr.Lifecycle, gracePeriod, path.Child("lifecycle"))...)
 		}
-		allErrs = append(allErrs, validateLivenessProbe(ctr.LivenessProbe, gracePeriod, path.Child("livenessProbe"), opts)...)
-		allErrs = append(allErrs, validateReadinessProbe(ctr.ReadinessProbe, gracePeriod, path.Child("readinessProbe"), opts)...)
-		allErrs = append(allErrs, validateStartupProbe(ctr.StartupProbe, gracePeriod, path.Child("startupProbe"), opts)...)
+		allErrs = append(allErrs, validateLivenessProbe(ctr.LivenessProbe, gracePeriod, path.Child("livenessProbe"))...)
+		allErrs = append(allErrs, validateReadinessProbe(ctr.ReadinessProbe, gracePeriod, path.Child("readinessProbe"))...)
+		allErrs = append(allErrs, validateStartupProbe(ctr.StartupProbe, gracePeriod, path.Child("startupProbe"))...)
 
 		// These fields are disallowed for regular containers
 		if ctr.RestartPolicy != nil {
@@ -4056,8 +4051,6 @@ type PodValidationOptions struct {
 	AllowRelaxedEnvironmentVariableValidation bool
 	// Allow the use of a relaxed DNS search
 	AllowRelaxedDNSSearchValidation bool
-	// Allows zero value for Pod Lifecycle Sleep Action
-	AllowPodLifecycleSleepActionZeroValue bool
 }
 
 // validatePodMetadataAndSpec tests if required fields in the pod.metadata and pod.spec are set,
@@ -5105,6 +5098,7 @@ var updatablePodSpecFields = []string{
 	"`spec.tolerations` (only additions to existing tolerations)",
 	"`spec.terminationGracePeriodSeconds` (allow it to be set to 1 if it was previously negative)",
 	"`spec.containers[*].resources` (for CPU/memory only)",
+	"`spec.containers[*].env` (for mustKeepCPUs only)",
 }
 
 // TODO(vinaykul,InPlacePodVerticalScaling): Drop this var once InPlacePodVerticalScaling goes GA and featuregate is gone.
@@ -5213,6 +5207,45 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 			lim := mungeCpuMemResources(container.Resources.Limits, oldPod.Spec.Containers[ix].Resources.Limits)
 			req := mungeCpuMemResources(container.Resources.Requests, oldPod.Spec.Containers[ix].Resources.Requests)
 			container.Resources = core.ResourceRequirements{Limits: lim, Requests: req}
+			// the element named "mustKeepCPUs" in env can be update or add
+			klog.InfoS("new env", "container.Env", container.Env)
+			klog.InfoS("old env", "oldPod.Spec.Containers[ix].Env", oldPod.Spec.Containers[ix].Env)
+			var existNewMustKeepCPUs bool = false
+			var existOldMustKeepCPUs bool = false
+			for jx, newEnv := range container.Env {
+				if newEnv.Name == "mustKeepCPUs" {
+					existNewMustKeepCPUs = true
+					mustKeepCPUset, err := cpuset.Parse(newEnv.Value)
+					if err != nil {
+						klog.InfoS("cpuset.Parse error", "mustKeepCPUset", mustKeepCPUset, "newEnv.Value", newEnv.Value)
+						allErrs = append(allErrs, field.Invalid(fldPath, newEnv, "Check mustKeepCPUs format, only number \",\" and \"-\" are allowed"))
+					}
+					//change mustKeepCPUs
+					for _, oldEnv := range oldPod.Spec.Containers[ix].Env {
+						if oldEnv.Name == "mustKeepCPUs" {
+							existOldMustKeepCPUs = true
+							container.Env[jx] = oldEnv
+							break
+						}
+					}
+					//add mustKeepCPUs
+					if existOldMustKeepCPUs == false && (len(container.Env)-len(oldPod.Spec.Containers[ix].Env)) == 1 {
+						container.Env = container.Env[1:] //delete "mustKeepCPUs" in newPod to make newPod equal to oldPod
+					}
+					break
+				}
+			}
+			//delete mustKeepCPUs
+			if existNewMustKeepCPUs == false && (len(oldPod.Spec.Containers[ix].Env)-len(container.Env)) == 1 {
+				var tempEnv []core.EnvVar
+				for _, oldEnv := range oldPod.Spec.Containers[ix].Env {
+					if oldEnv.Name == "mustKeepCPUs" {
+						continue
+					}
+					tempEnv = append(tempEnv, oldEnv)
+				}
+				oldPod.Spec.Containers[ix].Env = tempEnv
+			}
 		}
 		newContainers = append(newContainers, container)
 	}
