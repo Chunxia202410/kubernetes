@@ -1069,10 +1069,6 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 	// 3. Acquire single threads, preferring to fill partially-allocated cores
 	//    on the same sockets as the whole cores we have already taken in this
 	//    allocation.
-	acc.takeRemainingCPUsForResize()
-	if acc.isSatisfied() {
-		return acc.result, nil
-	}
 	acc.takeRemainingCPUs()
 	if acc.isSatisfied() {
 		return acc.result, nil
@@ -1197,7 +1193,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 			// Check that this combination of NUMA nodes has enough CPUs to
 			// satisfy the allocation overall.
 			cpus := acc.details.CPUsInNUMANodes(combo...)
-			if cpus.Size() < numCPUs {
+			if cpus.Size() < acc.numCPUsNeeded {
 				return Continue
 			}
 
@@ -1207,14 +1203,14 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 			for _, numa := range combo {
 				numCPUGroups += (acc.details.CPUsInNUMANodes(numa).Size() / cpuGroupSize)
 			}
-			if (numCPUGroups * cpuGroupSize) < numCPUs {
+			if (numCPUGroups * cpuGroupSize) < acc.numCPUsNeeded {
 				return Continue
 			}
 
 			// Check that each NUMA node in this combination can allocate an
 			// even distribution of CPUs in groups of size 'cpuGroupSize',
 			// modulo some remainder.
-			distribution := (numCPUs / len(combo) / cpuGroupSize) * cpuGroupSize
+			distribution := (acc.numCPUsNeeded / len(combo) / cpuGroupSize) * cpuGroupSize
 			for _, numa := range combo {
 				cpus := acc.details.CPUsInNUMANodes(numa)
 				if cpus.Size() < distribution {
@@ -1238,7 +1234,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 			// Check if there are any remaining CPUs to distribute across the
 			// NUMA nodes once CPUs have been evenly distributed in groups of
 			// size 'cpuGroupSize'.
-			remainder := numCPUs - (distribution * len(combo))
+			remainder := acc.numCPUsNeeded - (distribution * len(combo))
 
 			// Get a list of NUMA nodes to consider pulling the remainder CPUs
 			// from. This list excludes NUMA nodes that don't have at least
@@ -1337,7 +1333,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 		// Otherwise, start allocating CPUs from the NUMA node combination
 		// chosen. First allocate an even distribution of CPUs in groups of
 		// size 'cpuGroupSize' from 'bestCombo'.
-		distribution := (numCPUs / len(bestCombo) / cpuGroupSize) * cpuGroupSize
+		distribution := (acc.numCPUsNeeded / len(bestCombo) / cpuGroupSize) * cpuGroupSize
 		for _, numa := range bestCombo {
 			cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), distribution, cpuSortingStrategy, reusableCPUsForResize, mustKeepCPUsForScaleDown)
 			acc.take(cpus)
@@ -1345,7 +1341,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 
 		// Then allocate any remaining CPUs in groups of size 'cpuGroupSize'
 		// from each NUMA node in the remainder set.
-		remainder := numCPUs - (distribution * len(bestCombo))
+		remainder := acc.numCPUsNeeded - (distribution * len(bestCombo))
 		for remainder > 0 {
 			for _, numa := range bestRemainder {
 				if remainder == 0 {
