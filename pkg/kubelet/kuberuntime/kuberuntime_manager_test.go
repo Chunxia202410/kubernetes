@@ -1238,6 +1238,19 @@ func getKillMapWithInitContainers(pod *v1.Pod, status *kubecontainer.PodStatus, 
 	return m
 }
 
+func modifyKillMapContainerImage(containersToKill map[kubecontainer.ContainerID]containerToKillInfo, status *kubecontainer.PodStatus, cIndexes []int, imageNames []string) map[kubecontainer.ContainerID]containerToKillInfo {
+	for idx, i := range cIndexes {
+		containerKillInfo := containersToKill[status.ContainerStatuses[i].ID]
+		updatedContainer := containerKillInfo.container.DeepCopy()
+		updatedContainer.Image = imageNames[idx]
+		containersToKill[status.ContainerStatuses[i].ID] = containerToKillInfo{
+			container: updatedContainer,
+			name:      containerKillInfo.name,
+		}
+	}
+	return containersToKill
+}
+
 func verifyActions(t *testing.T, expected, actual *podActions, desc string) {
 	if actual.ContainersToKill != nil {
 		// Clear the message and reason fields since we don't need to verify them.
@@ -1524,12 +1537,12 @@ func makeBasePodAndStatusWithInitContainers() (*v1.Pod, *kubecontainer.PodStatus
 		{
 			ID:   kubecontainer.ContainerID{ID: "initid2"},
 			Name: "init2", State: kubecontainer.ContainerStateExited,
-			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[0]),
+			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[1]),
 		},
 		{
 			ID:   kubecontainer.ContainerID{ID: "initid3"},
 			Name: "init3", State: kubecontainer.ContainerStateExited,
-			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[0]),
+			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[2]),
 		},
 	}
 	return pod, status
@@ -1700,6 +1713,18 @@ func TestComputePodActionsWithRestartableInitContainers(t *testing.T) {
 			},
 			resetStatusFn: func(status *kubecontainer.PodStatus) {
 				m.startupManager.Remove(status.ContainerStatuses[2].ID)
+			},
+		},
+		"kill and recreate the restartable init container if the container definition changes": {
+			mutatePodFn: func(pod *v1.Pod) {
+				pod.Spec.RestartPolicy = v1.RestartPolicyAlways
+				pod.Spec.InitContainers[2].Image = "foo-image"
+			},
+			actions: podActions{
+				SandboxID:             baseStatus.SandboxStatuses[0].Id,
+				InitContainersToStart: []int{2},
+				ContainersToKill:      modifyKillMapContainerImage(getKillMapWithInitContainers(basePod, baseStatus, []int{2}), baseStatus, []int{2}, []string{"foo-image"}),
+				ContainersToStart:     []int{0, 1, 2},
 			},
 		},
 		"restart terminated restartable init container and next init container": {
@@ -1928,12 +1953,12 @@ func makeBasePodAndStatusWithRestartableInitContainers() (*v1.Pod, *kubecontaine
 		{
 			ID:   kubecontainer.ContainerID{ID: "initid2"},
 			Name: "restartable-init-2", State: kubecontainer.ContainerStateRunning,
-			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[0]),
+			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[1]),
 		},
 		{
 			ID:   kubecontainer.ContainerID{ID: "initid3"},
 			Name: "restartable-init-3", State: kubecontainer.ContainerStateRunning,
-			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[0]),
+			Hash: kubecontainer.HashContainer(&pod.Spec.InitContainers[2]),
 		},
 	}
 	return pod, status
@@ -2179,6 +2204,8 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 	m.machineInfo.MemoryCapacity = 17179860387 // 16GB
 	assert.NoError(t, err)
 
+	cpu1m := resource.MustParse("1m")
+	cpu2m := resource.MustParse("2m")
 	cpu100m := resource.MustParse("100m")
 	cpu200m := resource.MustParse("200m")
 	mem100M := resource.MustParse("100Mi")
@@ -2332,6 +2359,48 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 				if cStatus := status.FindContainerStatusByName(c.Name); cStatus != nil {
 					cStatus.Resources = &kubecontainer.ContainerResources{
 						CPULimit: ptr.To(cpu200m.DeepCopy()),
+					}
+				}
+			},
+			getExpectedPodActionsFn: func(pod *v1.Pod, podStatus *kubecontainer.PodStatus) *podActions {
+				pa := podActions{
+					SandboxID:          podStatus.SandboxStatuses[0].Id,
+					ContainersToKill:   getKillMap(pod, podStatus, []int{}),
+					ContainersToStart:  []int{},
+					ContainersToUpdate: map[v1.ResourceName][]containerToUpdateInfo{},
+				}
+				return &pa
+			},
+		},
+		"Nothing when spec.Resources and status.Resources are equivalent": {
+			setupFn: func(pod *v1.Pod, status *kubecontainer.PodStatus) {
+				c := &pod.Spec.Containers[1]
+				c.Resources = v1.ResourceRequirements{} // best effort pod
+				if cStatus := status.FindContainerStatusByName(c.Name); cStatus != nil {
+					cStatus.Resources = &kubecontainer.ContainerResources{
+						CPURequest: ptr.To(cpu2m.DeepCopy()),
+					}
+				}
+			},
+			getExpectedPodActionsFn: func(pod *v1.Pod, podStatus *kubecontainer.PodStatus) *podActions {
+				pa := podActions{
+					SandboxID:          podStatus.SandboxStatuses[0].Id,
+					ContainersToKill:   getKillMap(pod, podStatus, []int{}),
+					ContainersToStart:  []int{},
+					ContainersToUpdate: map[v1.ResourceName][]containerToUpdateInfo{},
+				}
+				return &pa
+			},
+		},
+		"Update container CPU resources to equivalent value": {
+			setupFn: func(pod *v1.Pod, status *kubecontainer.PodStatus) {
+				c := &pod.Spec.Containers[1]
+				c.Resources = v1.ResourceRequirements{
+					Requests: v1.ResourceList{v1.ResourceCPU: cpu1m},
+				}
+				if cStatus := status.FindContainerStatusByName(c.Name); cStatus != nil {
+					cStatus.Resources = &kubecontainer.ContainerResources{
+						CPURequest: ptr.To(cpu2m.DeepCopy()),
 					}
 				}
 			},
@@ -2616,7 +2685,7 @@ func TestUpdatePodContainerResources(t *testing.T) {
 		}
 		fakeRuntime.Called = []string{}
 		err := m.updatePodContainerResources(pod, tc.resourceName, containersToUpdate)
-		assert.NoError(t, err, dsc)
+		require.NoError(t, err, dsc)
 
 		if tc.invokeUpdateResources {
 			assert.Contains(t, fakeRuntime.Called, "UpdateContainerResources", dsc)

@@ -327,7 +327,7 @@ func (r *crdHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		string(types.MergePatchType),
 		string(types.ApplyYAMLPatchType),
 	}
-	if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
 		supportedTypes = append(supportedTypes, string(types.ApplyCBORPatchType))
 	}
 
@@ -604,20 +604,6 @@ func (r *crdHandler) GetCustomResourceListerCollectionDeleter(crd *apiextensions
 		return nil, err
 	}
 	return info.storages[info.storageVersion].CustomResource, nil
-}
-
-func newCBORSerializerInfo(creater runtime.ObjectCreater, typer runtime.ObjectTyper) runtime.SerializerInfo {
-	return runtime.SerializerInfo{
-		MediaType:        "application/cbor",
-		MediaTypeType:    "application",
-		MediaTypeSubType: "cbor",
-		Serializer:       cbor.NewSerializer(creater, typer),
-		StrictSerializer: cbor.NewSerializer(creater, typer, cbor.Strict(true)),
-		StreamSerializer: &runtime.StreamSerializerInfo{
-			Framer:     cbor.NewFramer(),
-			Serializer: cbor.NewSerializer(creater, typer, cbor.Transcode(false)),
-		},
-	}
 }
 
 // getOrCreateServingInfoFor gets the CRD serving info for the given CRD UID if the key exists in the storage map.
@@ -913,8 +899,8 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 			},
 		}
 
-		if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
-			negotiatedSerializer.supportedMediaTypes = append(negotiatedSerializer.supportedMediaTypes, newCBORSerializerInfo(creator, typer))
+		if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
+			negotiatedSerializer.supportedMediaTypes = append(negotiatedSerializer.supportedMediaTypes, cbor.NewSerializerInfo(creator, typer))
 		}
 
 		var standardSerializers []runtime.SerializerInfo
@@ -981,8 +967,8 @@ func (r *crdHandler) getOrCreateServingInfoFor(uid types.UID, name string) (*crd
 		scaleConverter := scale.NewScaleConverter()
 		scaleScope.Subresource = "scale"
 		var opts []serializer.CodecFactoryOptionsMutator
-		if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
-			opts = append(opts, serializer.WithSerializer(newCBORSerializerInfo))
+		if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
+			opts = append(opts, serializer.WithSerializer(cbor.NewSerializerInfo))
 		}
 		scaleScope.Serializer = serializer.NewCodecFactory(scaleConverter.Scheme(), opts...)
 		scaleScope.Kind = autoscalingv1.SchemeGroupVersion.WithKind("Scale")

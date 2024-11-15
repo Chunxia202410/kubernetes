@@ -33,7 +33,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/apimachinery/pkg/util/version"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	api "k8s.io/kubernetes/pkg/apis/core"
@@ -2638,26 +2637,182 @@ func TestDropInPlacePodVerticalScaling(t *testing.T) {
 		},
 	}
 
+	for _, ippvsEnabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("InPlacePodVerticalScaling=%t", ippvsEnabled), func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, ippvsEnabled)
+
+			for _, allocatedStatusEnabled := range []bool{true, false} {
+				t.Run(fmt.Sprintf("AllocatedStatus=%t", allocatedStatusEnabled), func(t *testing.T) {
+					featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScalingAllocatedStatus, allocatedStatusEnabled)
+
+					for _, oldPodInfo := range podInfo {
+						for _, newPodInfo := range podInfo {
+							oldPodHasInPlaceVerticalScaling, oldPod := oldPodInfo.hasInPlaceVerticalScaling, oldPodInfo.pod()
+							newPodHasInPlaceVerticalScaling, newPod := newPodInfo.hasInPlaceVerticalScaling, newPodInfo.pod()
+							if newPod == nil {
+								continue
+							}
+
+							t.Run(fmt.Sprintf("old pod %v, new pod %v", oldPodInfo.description, newPodInfo.description), func(t *testing.T) {
+								var oldPodSpec *api.PodSpec
+								var oldPodStatus *api.PodStatus
+								if oldPod != nil {
+									oldPodSpec = &oldPod.Spec
+									oldPodStatus = &oldPod.Status
+								}
+								dropDisabledFields(&newPod.Spec, nil, oldPodSpec, nil)
+								dropDisabledPodStatusFields(&newPod.Status, oldPodStatus, &newPod.Spec, oldPodSpec)
+
+								// old pod should never be changed
+								if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
+									t.Errorf("old pod changed: %v", cmp.Diff(oldPod, oldPodInfo.pod()))
+								}
+
+								switch {
+								case ippvsEnabled || oldPodHasInPlaceVerticalScaling:
+									// new pod shouldn't change if feature enabled or if old pod has ResizePolicy set
+									expected := newPodInfo.pod()
+									if !ippvsEnabled || !allocatedStatusEnabled {
+										expected.Status.ContainerStatuses[0].AllocatedResources = nil
+									}
+									if !reflect.DeepEqual(newPod, expected) {
+										t.Errorf("new pod changed: %v", cmp.Diff(newPod, expected))
+									}
+								case newPodHasInPlaceVerticalScaling:
+									// new pod should be changed
+									if reflect.DeepEqual(newPod, newPodInfo.pod()) {
+										t.Errorf("new pod was not changed")
+									}
+									// new pod should not have ResizePolicy
+									if !reflect.DeepEqual(newPod, podWithoutInPlaceVerticalScaling()) {
+										t.Errorf("new pod has ResizePolicy: %v", cmp.Diff(newPod, podWithoutInPlaceVerticalScaling()))
+									}
+								default:
+									// new pod should not need to be changed
+									if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
+										t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
+									}
+								}
+							})
+						}
+					}
+
+				})
+			}
+		})
+	}
+}
+
+func TestDropPodLevelResources(t *testing.T) {
+	containers := []api.Container{
+		{
+			Name:  "c1",
+			Image: "image",
+			Resources: api.ResourceRequirements{
+				Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+				Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+			},
+		},
+	}
+	podWithPodLevelResources := func() *api.Pod {
+		return &api.Pod{
+			Spec: api.PodSpec{
+				Resources: &api.ResourceRequirements{
+					Requests: api.ResourceList{
+						api.ResourceCPU:    resource.MustParse("100m"),
+						api.ResourceMemory: resource.MustParse("50Gi"),
+					},
+					Limits: api.ResourceList{
+						api.ResourceCPU:    resource.MustParse("100m"),
+						api.ResourceMemory: resource.MustParse("50Gi"),
+					},
+				},
+				Containers: containers,
+			},
+		}
+	}
+
+	podWithoutPodLevelResources := func() *api.Pod {
+		return &api.Pod{
+			Spec: api.PodSpec{
+				Containers: containers,
+			},
+		}
+	}
+
+	podInfo := []struct {
+		description          string
+		hasPodLevelResources bool
+		pod                  func() *api.Pod
+	}{
+		{
+			description:          "has pod-level resources",
+			hasPodLevelResources: true,
+			pod:                  podWithPodLevelResources,
+		},
+		{
+			description:          "does not have pod-level resources",
+			hasPodLevelResources: false,
+			pod:                  podWithoutPodLevelResources,
+		},
+		{
+			description:          "is nil",
+			hasPodLevelResources: false,
+			pod:                  func() *api.Pod { return nil },
+		},
+		{
+			description:          "is empty struct",
+			hasPodLevelResources: false,
+			// refactor to generalize and use podWithPodLevelResources()
+			pod: func() *api.Pod {
+				return &api.Pod{
+					Spec: api.PodSpec{
+						Resources:  &api.ResourceRequirements{},
+						Containers: containers,
+					},
+				}
+			},
+		},
+		{
+			description:          "is empty Requests list",
+			hasPodLevelResources: false,
+			pod: func() *api.Pod {
+				return &api.Pod{
+					Spec: api.PodSpec{Resources: &api.ResourceRequirements{
+						Requests: api.ResourceList{},
+					}}}
+			},
+		},
+		{
+			description:          "is empty Limits list",
+			hasPodLevelResources: false,
+			pod: func() *api.Pod {
+				return &api.Pod{
+					Spec: api.PodSpec{Resources: &api.ResourceRequirements{
+						Limits: api.ResourceList{},
+					}}}
+			},
+		},
+	}
+
 	for _, enabled := range []bool{true, false} {
 		for _, oldPodInfo := range podInfo {
 			for _, newPodInfo := range podInfo {
-				oldPodHasInPlaceVerticalScaling, oldPod := oldPodInfo.hasInPlaceVerticalScaling, oldPodInfo.pod()
-				newPodHasInPlaceVerticalScaling, newPod := newPodInfo.hasInPlaceVerticalScaling, newPodInfo.pod()
+				oldPodHasPodLevelResources, oldPod := oldPodInfo.hasPodLevelResources, oldPodInfo.pod()
+				newPodHasPodLevelResources, newPod := newPodInfo.hasPodLevelResources, newPodInfo.pod()
 				if newPod == nil {
 					continue
 				}
 
 				t.Run(fmt.Sprintf("feature enabled=%v, old pod %v, new pod %v", enabled, oldPodInfo.description, newPodInfo.description), func(t *testing.T) {
-					featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.InPlacePodVerticalScaling, enabled)
+					featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.PodLevelResources, enabled)
 
 					var oldPodSpec *api.PodSpec
-					var oldPodStatus *api.PodStatus
 					if oldPod != nil {
 						oldPodSpec = &oldPod.Spec
-						oldPodStatus = &oldPod.Status
 					}
+
 					dropDisabledFields(&newPod.Spec, nil, oldPodSpec, nil)
-					dropDisabledPodStatusFields(&newPod.Status, oldPodStatus, &newPod.Spec, oldPodSpec)
 
 					// old pod should never be changed
 					if !reflect.DeepEqual(oldPod, oldPodInfo.pod()) {
@@ -2665,24 +2820,24 @@ func TestDropInPlacePodVerticalScaling(t *testing.T) {
 					}
 
 					switch {
-					case enabled || oldPodHasInPlaceVerticalScaling:
-						// new pod shouldn't change if feature enabled or if old pod has ResizePolicy set
+					case enabled || oldPodHasPodLevelResources:
+						// new pod shouldn't change if feature enabled or if old pod has
+						// any pod level resources
 						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
 							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
 						}
-					case newPodHasInPlaceVerticalScaling:
+					case newPodHasPodLevelResources:
 						// new pod should be changed
 						if reflect.DeepEqual(newPod, newPodInfo.pod()) {
 							t.Errorf("new pod was not changed")
 						}
-						// new pod should not have ResizePolicy
-						if !reflect.DeepEqual(newPod, podWithoutInPlaceVerticalScaling()) {
-							t.Errorf("new pod has ResizePolicy: %v", cmp.Diff(newPod, podWithoutInPlaceVerticalScaling()))
+						// new pod should not have any pod-level resources
+						if !reflect.DeepEqual(newPod, podWithoutPodLevelResources()) {
+							t.Errorf("new pod has pod-level resources: %v", cmp.Diff(newPod, podWithoutPodLevelResources()))
 						}
 					default:
-						// new pod should not need to be changed
-						if !reflect.DeepEqual(newPod, newPodInfo.pod()) {
-							t.Errorf("new pod changed: %v", cmp.Diff(newPod, newPodInfo.pod()))
+						if newPod.Spec.Resources != nil {
+							t.Errorf("expected nil, got: %v", newPod.Spec.Resources)
 						}
 					}
 				})
@@ -2796,439 +2951,277 @@ func TestDropSidecarContainers(t *testing.T) {
 
 func TestMarkPodProposedForResize(t *testing.T) {
 	testCases := []struct {
-		desc        string
-		newPod      *api.Pod
-		oldPod      *api.Pod
-		expectedPod *api.Pod
+		desc                 string
+		newPodSpec           api.PodSpec
+		oldPodSpec           api.PodSpec
+		expectProposedResize bool
 	}{
 		{
 			desc: "nil requests",
-			newPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:  "c1",
-							Image: "image",
-						},
+			newPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
 					},
 				},
 			},
-			oldPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:  "c1",
-							Image: "image",
-						},
+			oldPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
 					},
 				},
 			},
-			expectedPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:  "c1",
-							Image: "image",
-						},
-					},
-				},
-			},
+			expectProposedResize: false,
 		},
 		{
 			desc: "resources unchanged",
-			newPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:  "c1",
-							Image: "image",
+			newPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
 				},
 			},
-			oldPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:  "c1",
-							Image: "image",
+			oldPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
 				},
 			},
-			expectedPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:  "c1",
-							Image: "image",
-						},
-					},
-				},
-			},
+			expectProposedResize: false,
 		},
 		{
-			desc: "resize desired",
-			newPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-						{
-							Name:  "c2",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
-							},
+			desc: "requests resized",
+			newPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-						},
-						{
-							Name:               "c2",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
 						},
 					},
 				},
 			},
-			oldPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-						{
-							Name:  "c2",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
-							},
+			oldPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-						},
-						{
-							Name:               "c2",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
 						},
 					},
 				},
 			},
-			expectedPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-						{
-							Name:  "c2",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
-							},
+			expectProposedResize: true,
+		},
+		{
+			desc: "limits resized",
+			newPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
-				},
-				Status: api.PodStatus{
-					Resize: api.PodResizeStatusProposed,
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-						},
-						{
-							Name:               "c2",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
 						},
 					},
 				},
 			},
+			oldPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+						},
+					},
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("500m")},
+						},
+					},
+				},
+			},
+			expectProposedResize: true,
 		},
 		{
 			desc: "the number of containers in the pod has increased; no action should be taken.",
-			newPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-						{
-							Name:  "c2",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
-							},
+			newPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-						},
-						{
-							Name:               "c2",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
 						},
 					},
 				},
 			},
-			oldPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+			oldPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
 				},
 			},
-			expectedPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-						{
-							Name:  "c2",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
-							},
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-						},
-						{
-							Name:               "c2",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-						},
-					},
-				},
-			},
+			expectProposedResize: false,
 		},
 		{
 			desc: "the number of containers in the pod has decreased; no action should be taken.",
-			newPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+			newPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
 				},
 			},
-			oldPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
-						},
-						{
-							Name:  "c2",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
-							},
+			oldPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-						},
-						{
-							Name:               "c2",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
 						},
 					},
 				},
 			},
-			expectedPod: &api.Pod{
-				Spec: api.PodSpec{
-					Containers: []api.Container{
-						{
-							Name:  "c1",
-							Image: "image",
-							Resources: api.ResourceRequirements{
-								Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
-								Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
-							},
+			expectProposedResize: false,
+		},
+		{
+			desc: "containers reordered",
+			newPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
 						},
 					},
-				},
-				Status: api.PodStatus{
-					ContainerStatuses: []api.ContainerStatus{
-						{
-							Name:               "c1",
-							Image:              "image",
-							AllocatedResources: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
 						},
 					},
 				},
 			},
+			oldPodSpec: api.PodSpec{
+				Containers: []api.Container{
+					{
+						Name:  "c2",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("100m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("200m")},
+						},
+					},
+					{
+						Name:  "c1",
+						Image: "image",
+						Resources: api.ResourceRequirements{
+							Requests: api.ResourceList{api.ResourceCPU: resource.MustParse("300m")},
+							Limits:   api.ResourceList{api.ResourceCPU: resource.MustParse("400m")},
+						},
+					},
+				},
+			},
+			expectProposedResize: false,
 		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
-			MarkPodProposedForResize(tc.oldPod, tc.newPod)
-			if diff := cmp.Diff(tc.expectedPod, tc.newPod); diff != "" {
-				t.Errorf("unexpected pod spec (-want, +got):\n%s", diff)
+			newPod := &api.Pod{Spec: tc.newPodSpec}
+			newPodUnchanged := newPod.DeepCopy()
+			oldPod := &api.Pod{Spec: tc.oldPodSpec}
+			MarkPodProposedForResize(oldPod, newPod)
+			if tc.expectProposedResize {
+				assert.Equal(t, api.PodResizeStatusProposed, newPod.Status.Resize)
+			} else {
+				assert.Equal(t, api.PodResizeStatus(""), newPod.Status.Resize)
 			}
+			newPod.Status.Resize = newPodUnchanged.Status.Resize // Only field that might have changed.
+			assert.Equal(t, newPodUnchanged, newPod, "No fields other than .status.resize should be modified")
 		})
 	}
 }
@@ -3551,7 +3544,6 @@ func TestDropPodLifecycleSleepAction(t *testing.T) {
 
 	for i, tc := range testCases {
 		t.Run(fmt.Sprintf("test_%d", i), func(t *testing.T) {
-			featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.31"))
 			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.PodLifecycleSleepAction, tc.gateEnabled)
 
 			// preStop

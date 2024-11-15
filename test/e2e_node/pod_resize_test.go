@@ -1343,9 +1343,7 @@ func doPodResizeTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalScaling
 		ginkgo.It(tc.name+policy.title+" (InPlacePodVerticalScalingExclusiveCPUs="+strconv.FormatBool(isInPlacePodVerticalScalingExclusiveCPUsEnabled)+")", func(ctx context.Context) {
 			cpuManagerPolicyKubeletConfig(ctx, f, oldCfg, policy.name, policy.options, isInPlacePodVerticalScalingExclusiveCPUsEnabled)
 
-			var testPod, patchedPod *v1.Pod
-
-			var pErr error
+			var testPod *v1.Pod
 
 			tStamp := strconv.Itoa(time.Now().Nanosecond())
 			e2epod.InitDefaultResizePolicy(tc.containers)
@@ -1381,7 +1379,7 @@ func doPodResizeTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalScaling
 			framework.Logf("pod %s/%s running", newPod.Namespace, newPod.Name)
 
 			ginkgo.By("verifying initial pod status resources are as expected")
-			e2epod.VerifyPodStatusResources(newPod, tc.containers)
+			framework.ExpectNoError(e2epod.VerifyPodStatusResources(newPod, tc.containers))
 			ginkgo.By("verifying initial cgroup config are as expected")
 			framework.ExpectNoError(e2epod.VerifyPodContainersCgroupValues(ctx, f, newPod, tc.containers))
 			// TODO make this dynamic depending on Policy Name, Resources input and topology of target
@@ -1396,18 +1394,9 @@ func doPodResizeTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalScaling
 
 			patchAndVerify := func(patchString string, expectedContainers []e2epod.ResizableContainerInfo, initialContainers []e2epod.ResizableContainerInfo, opStr string, isRollback bool) {
 				ginkgo.By(fmt.Sprintf("patching pod for %s", opStr))
-				patchedPod, pErr = f.ClientSet.CoreV1().Pods(newPod.Namespace).Patch(context.TODO(), newPod.Name,
-					types.StrategicMergePatchType, []byte(patchString), metav1.PatchOptions{})
-				framework.ExpectNoError(pErr, fmt.Sprintf("failed to patch pod for %s", opStr))
-
-				ginkgo.By(fmt.Sprintf("verifying pod patched for %s", opStr))
-				e2epod.VerifyPodResources(patchedPod, expectedContainers)
-				gomega.Eventually(ctx, e2epod.VerifyPodAllocations, timeouts.PodStartShort, timeouts.Poll).
-					WithArguments(patchedPod, initialContainers).
-					Should(gomega.BeNil(), "failed to verify Pod allocations for patchedPod")
 
 				ginkgo.By(fmt.Sprintf("waiting for %s to be actuated", opStr))
-				resizedPod := e2epod.WaitForPodResizeActuation(ctx, f, podClient, newPod, patchedPod, expectedContainers, initialContainers, isRollback)
+				resizedPod := e2epod.WaitForPodResizeActuation(ctx, f, podClient, newPod)
 
 				// Check cgroup values only for containerd versions before 1.6.9
 				ginkgo.By(fmt.Sprintf("verifying pod container's cgroup values after %s", opStr))
@@ -1416,10 +1405,6 @@ func doPodResizeTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalScaling
 				ginkgo.By(fmt.Sprintf("verifying pod resources after %s", opStr))
 				e2epod.VerifyPodResources(resizedPod, expectedContainers)
 
-				ginkgo.By(fmt.Sprintf("verifying pod allocations after %s", opStr))
-				gomega.Eventually(ctx, e2epod.VerifyPodAllocations, timeouts.PodStartShort, timeouts.Poll).
-					WithArguments(resizedPod, expectedContainers).
-					Should(gomega.BeNil(), "failed to verify Pod allocations for resizedPod")
 				// TODO make this dynamic depending on Policy Name, Resources input and topology of target
 				// machine.
 				// For the moment skip below if CPU Manager Policy is set to none
@@ -1562,7 +1547,7 @@ func doPodResizeErrorTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalSc
 			e2epod.VerifyPodResizePolicy(newPod, tc.containers)
 
 			ginkgo.By("verifying initial pod status resources and cgroup config are as expected")
-			e2epod.VerifyPodStatusResources(newPod, tc.containers)
+			framework.ExpectNoError(e2epod.VerifyPodStatusResources(newPod, tc.containers))
 
 			ginkgo.By("patching pod for resize")
 			patchedPod, pErr = f.ClientSet.CoreV1().Pods(newPod.Namespace).Patch(ctx, newPod.Name,
@@ -1576,11 +1561,6 @@ func doPodResizeErrorTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalSc
 
 			ginkgo.By("verifying pod resources after patch")
 			e2epod.VerifyPodResources(patchedPod, tc.expected)
-
-			ginkgo.By("verifying pod allocations after patch")
-			gomega.Eventually(ctx, e2epod.VerifyPodAllocations, timeouts.PodStartShort, timeouts.Poll).
-				WithArguments(patchedPod, tc.expected).
-				Should(gomega.BeNil(), "failed to verify Pod allocations for patchedPod")
 
 			deletePodSyncByName(ctx, f, newPod.Name)
 			// we need to wait for all containers to really be gone so cpumanager reconcile loop will not rewrite the cpu_manager_state.
