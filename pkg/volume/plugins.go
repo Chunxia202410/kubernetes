@@ -23,7 +23,6 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
 	"k8s.io/utils/exec"
@@ -309,15 +308,18 @@ type KubeletVolumeHost interface {
 	GetTrustAnchorsBySigner(signerName string, labelSelector *metav1.LabelSelector, allowMissing bool) ([]byte, error)
 }
 
+// CSIDriverVolumeHost is a volume host that has access to CSIDriverLister
+type CSIDriverVolumeHost interface {
+	// CSIDriverLister returns the informer lister for the CSIDriver API Object
+	CSIDriverLister() storagelistersv1.CSIDriverLister
+}
+
 // AttachDetachVolumeHost is a AttachDetach Controller specific interface that plugins can use
 // to access methods on the Attach Detach Controller.
 type AttachDetachVolumeHost interface {
+	CSIDriverVolumeHost
 	// CSINodeLister returns the informer lister for the CSINode API Object
 	CSINodeLister() storagelistersv1.CSINodeLister
-
-	// CSIDriverLister returns the informer lister for the CSIDriver API Object
-	CSIDriverLister() storagelistersv1.CSIDriverLister
-
 	// VolumeAttachmentLister returns the informer lister for the VolumeAttachment API Object
 	VolumeAttachmentLister() storagelistersv1.VolumeAttachmentLister
 	// IsAttachDetachController is an interface marker to strictly tie AttachDetachVolumeHost
@@ -417,12 +419,11 @@ type VolumeHost interface {
 
 // VolumePluginMgr tracks registered plugins.
 type VolumePluginMgr struct {
-	mutex                     sync.RWMutex
-	plugins                   map[string]VolumePlugin
-	prober                    DynamicPluginProber
-	probedPlugins             map[string]VolumePlugin
-	loggedDeprecationWarnings sets.Set[string]
-	Host                      VolumeHost
+	mutex         sync.RWMutex
+	plugins       map[string]VolumePlugin
+	prober        DynamicPluginProber
+	probedPlugins map[string]VolumePlugin
+	Host          VolumeHost
 }
 
 // Spec is an internal representation of a volume.  All API volume types translate to Spec.
@@ -563,7 +564,6 @@ func (pm *VolumePluginMgr) InitPlugins(plugins []VolumePlugin, prober DynamicPlu
 	defer pm.mutex.Unlock()
 
 	pm.Host = host
-	pm.loggedDeprecationWarnings = sets.New[string]()
 
 	if prober == nil {
 		// Use a dummy prober to prevent nil deference.
@@ -605,6 +605,7 @@ func (pm *VolumePluginMgr) InitPlugins(plugins []VolumePlugin, prober DynamicPlu
 		pm.plugins[name] = plugin
 		klog.V(1).InfoS("Loaded volume plugin", "pluginName", name)
 	}
+	pm.refreshProbedPlugins()
 	return utilerrors.NewAggregate(allErrs)
 }
 

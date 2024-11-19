@@ -895,7 +895,7 @@ func (a *APIInstaller) registerResourceHandlers(path string, storage rest.Storag
 				string(types.StrategicMergePatchType),
 				string(types.ApplyYAMLPatchType),
 			}
-			if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+			if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
 				supportedTypes = append(supportedTypes, string(types.ApplyCBORPatchType))
 			}
 			handler := metrics.InstrumentRouteFunc(action.Verb, group, version, resource, subresource, requestScope, metrics.APIServerComponent, deprecated, removedRelease, restfulPatchResource(patcher, reqScope, admit, supportedTypes))
@@ -1215,6 +1215,8 @@ func typeToJSON(typeName string) string {
 	case "v1.ResourceVersionMatch", "*v1.ResourceVersionMatch":
 		return "string"
 	case "v1.IncludeObjectPolicy", "*v1.IncludeObjectPolicy":
+		return "string"
+	case "*string":
 		return "string"
 
 	// TODO: Fix these when go-restful supports a way to specify an array query param:

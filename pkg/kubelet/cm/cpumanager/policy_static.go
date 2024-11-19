@@ -345,7 +345,7 @@ func (p *staticPolicy) updateCPUsToReuse(pod *v1.Pod, container *v1.Container, c
 	// If so, add its cpuset to the cpuset of reusable CPUs for any new allocations.
 	for _, initContainer := range pod.Spec.InitContainers {
 		if container.Name == initContainer.Name {
-			if types.IsRestartableInitContainer(&initContainer) {
+			if podutil.IsRestartableInitContainer(&initContainer) {
 				// If the container is a restartable init container, we should not
 				// reuse its cpuset, as a restartable init container can run with
 				// regular containers.
@@ -616,7 +616,7 @@ func (p *staticPolicy) podGuaranteedCPUs(pod *v1.Pod) int {
 		requestedCPU := p.guaranteedCPUs(pod, &container)
 		// See https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/753-sidecar-containers#resources-calculation-for-scheduling-and-pod-admission
 		// for the detail.
-		if types.IsRestartableInitContainer(&container) {
+		if podutil.IsRestartableInitContainer(&container) {
 			requestedByRestartableInitContainers += requestedCPU
 		} else if requestedByRestartableInitContainers+requestedCPU > requestedByInitContainers {
 			requestedByInitContainers = requestedByRestartableInitContainers + requestedCPU
@@ -652,7 +652,7 @@ func (p *staticPolicy) takeByTopology(availableCPUs cpuset.CPUSet, numCPUs int, 
 		}
 		return takeByTopologyNUMADistributed(p.topology, availableCPUs, numCPUs, cpuGroupSize, cpuSortingStrategy, reusableCPUsForResize, mustKeepCPUsForScaleDown)
 	}
-	return takeByTopologyNUMAPacked(p.topology, availableCPUs, numCPUs, cpuSortingStrategy, reusableCPUsForResize, mustKeepCPUsForScaleDown)
+	return takeByTopologyNUMAPacked(p.topology, availableCPUs, numCPUs, cpuSortingStrategy, p.options.PreferAlignByUncoreCacheOption, reusableCPUsForResize, mustKeepCPUsForScaleDown)
 }
 
 func (p *staticPolicy) GetTopologyHints(s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
