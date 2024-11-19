@@ -77,7 +77,7 @@ func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOp
 	}
 	framer := serializer.StreamSerializer.Framer
 	var encoder runtime.Encoder
-	if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
 		encoder = scope.Serializer.EncoderForVersion(runtime.UseNondeterministicEncoding(serializer.StreamSerializer.Serializer), scope.Kind.GroupVersion())
 	} else {
 		encoder = scope.Serializer.EncoderForVersion(serializer.StreamSerializer.Serializer, scope.Kind.GroupVersion())
@@ -88,7 +88,17 @@ func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOp
 	}
 	// TODO: next step, get back mediaTypeOptions from negotiate and return the exact value here
 	mediaType := serializer.MediaType
-	if mediaType != runtime.ContentTypeJSON {
+	switch mediaType {
+	case runtime.ContentTypeJSON:
+		// as-is
+	case runtime.ContentTypeCBOR:
+		// If a client indicated it accepts application/cbor (exactly one data item) on a
+		// watch request, set the conformant application/cbor-seq media type the watch
+		// response. RFC 9110 allows an origin server to deviate from the indicated
+		// preference rather than send a 406 (Not Acceptable) response (see
+		// https://www.rfc-editor.org/rfc/rfc9110.html#section-12.1-5).
+		mediaType = runtime.ContentTypeCBORSequence
+	default:
 		mediaType += ";stream=watch"
 	}
 
@@ -102,13 +112,13 @@ func serveWatchHandler(watcher watch.Interface, scope *RequestScope, mediaTypeOp
 		if !ok {
 			return nil, fmt.Errorf("no encoder for %q exists in the requested target %#v", serializer.MediaType, contentSerializer)
 		}
-		if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
 			negotiatedEncoder = contentSerializer.EncoderForVersion(runtime.UseNondeterministicEncoding(info.Serializer), contentKind.GroupVersion())
 		} else {
 			negotiatedEncoder = contentSerializer.EncoderForVersion(info.Serializer, contentKind.GroupVersion())
 		}
 	} else {
-		if utilfeature.TestOnlyFeatureGate.Enabled(features.TestOnlyCBORServingAndStorage) {
+		if utilfeature.DefaultFeatureGate.Enabled(features.CBORServingAndStorage) {
 			negotiatedEncoder = scope.Serializer.EncoderForVersion(runtime.UseNondeterministicEncoding(serializer.Serializer), contentKind.GroupVersion())
 		} else {
 			negotiatedEncoder = scope.Serializer.EncoderForVersion(serializer.Serializer, contentKind.GroupVersion())

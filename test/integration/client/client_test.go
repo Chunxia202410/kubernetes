@@ -46,17 +46,22 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/apiserver/pkg/features"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	appsv1ac "k8s.io/client-go/applyconfigurations/apps/v1"
 	autoscalingv1ac "k8s.io/client-go/applyconfigurations/autoscaling/v1"
 	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/discovery"
+	clientfeatures "k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/gentype"
 	"k8s.io/client-go/kubernetes"
 	clientscheme "k8s.io/client-go/kubernetes/scheme"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/retry"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	utilversion "k8s.io/component-base/version"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
@@ -1428,6 +1433,30 @@ func TestClientCBOREnablement(t *testing.T) {
 		return err
 	}
 
+	DoWatchRequestWithGenericTypedClient := func(t *testing.T, config *rest.Config) error {
+		clientset, err := kubernetes.NewForConfig(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Generated clients for built-in types include the PreferProtobuf option, which
+		// forces Protobuf encoding on a per-request basis.
+		client := gentype.NewClientWithListAndApply[*v1.Namespace, *v1.NamespaceList, *corev1ac.NamespaceApplyConfiguration](
+			"namespaces",
+			clientset.CoreV1().RESTClient(),
+			clientscheme.ParameterCodec,
+			"",
+			func() *v1.Namespace { return &v1.Namespace{} },
+			func() *v1.NamespaceList { return &v1.NamespaceList{} },
+		)
+		w, err := client.Watch(context.TODO(), metav1.ListOptions{LabelSelector: "a,!a"})
+		if err != nil {
+			return err
+		}
+		w.Stop()
+		return nil
+	}
+
 	type testCase struct {
 		name                    string
 		served                  bool
@@ -1649,6 +1678,20 @@ func TestClientCBOREnablement(t *testing.T) {
 			doRequest:               DoRequestWithGenericTypedClient,
 		},
 		{
+			name:                    "generated client watch accept cbor and json get cbor-seq",
+			served:                  true,
+			allowed:                 true,
+			preferred:               false,
+			configuredContentType:   "application/json",
+			configuredAccept:        "application/cbor;q=1,application/json;q=0.9",
+			wantRequestContentType:  "",
+			wantRequestAccept:       "application/cbor;q=1,application/json;q=0.9",
+			wantResponseContentType: "application/cbor-seq",
+			wantResponseStatus:      http.StatusOK,
+			wantStatusError:         false,
+			doRequest:               DoWatchRequestWithGenericTypedClient,
+		},
+		{
 			name:                    "generated client accept cbor and json get json cbor not served",
 			served:                  false,
 			allowed:                 true,
@@ -1683,7 +1726,7 @@ func TestClientCBOREnablement(t *testing.T) {
 			// Batch test cases with their server configuration instead of starting and stopping
 			// a new apiserver for each test case.
 			if served {
-				framework.EnableCBORServingAndStorageForTest(t)
+				featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CBORServingAndStorage, true)
 			}
 
 			server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
@@ -1754,7 +1797,8 @@ func TestClientCBOREnablement(t *testing.T) {
 				}
 
 				t.Run(tc.name, func(t *testing.T) {
-					framework.SetTestOnlyCBORClientFeatureGatesForTest(t, tc.allowed, tc.preferred)
+					clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.ClientsAllowCBOR, tc.allowed)
+					clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.ClientsPreferCBOR, tc.preferred)
 
 					config := rest.CopyConfig(server.ClientConfig)
 					config.ContentType = tc.configuredContentType
@@ -1794,8 +1838,9 @@ func TestClientCBOREnablement(t *testing.T) {
 }
 
 func TestCBORWithTypedClient(t *testing.T) {
-	framework.EnableCBORServingAndStorageForTest(t)
-	framework.SetTestOnlyCBORClientFeatureGatesForTest(t, true, true)
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CBORServingAndStorage, true)
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.ClientsAllowCBOR, true)
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.ClientsPreferCBOR, true)
 
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 	t.Cleanup(server.TearDownFn)
@@ -1986,49 +2031,66 @@ func TestCBORWithTypedClient(t *testing.T) {
 }
 
 func TestUnsupportedMediaTypeCircuitBreaker(t *testing.T) {
-	framework.SetTestOnlyCBORClientFeatureGatesForTest(t, true, true)
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.ClientsAllowCBOR, true)
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.ClientsPreferCBOR, true)
 
 	server := kubeapiservertesting.StartTestServerOrDie(t, nil, framework.DefaultTestServerFlags(), framework.SharedEtcd())
 	t.Cleanup(server.TearDownFn)
 
-	config := rest.CopyConfig(server.ClientConfig)
-	config.ContentType = "application/cbor"
-	config.AcceptContentTypes = "application/json"
+	for _, tc := range []struct {
+		name        string
+		contentType string
+	}{
+		{
+			name:        "default content type",
+			contentType: "",
+		},
+		{
+			name:        "explicit content type",
+			contentType: "application/cbor",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := rest.CopyConfig(server.ClientConfig)
+			config.ContentType = tc.contentType
+			config.AcceptContentTypes = "application/json"
 
-	client, err := corev1client.NewForConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+			client, err := corev1client.NewForConfig(config)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	if _, err := client.Namespaces().Create(
-		context.TODO(),
-		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-client-415"}},
-		metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}},
-	); !apierrors.IsUnsupportedMediaType(err) {
-		t.Errorf("expected to receive unsupported media type on first cbor request, got: %v", err)
-	}
+			if _, err := client.Namespaces().Create(
+				context.TODO(),
+				&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-client-415"}},
+				metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}},
+			); !apierrors.IsUnsupportedMediaType(err) {
+				t.Errorf("expected to receive unsupported media type on first cbor request, got: %v", err)
+			}
 
-	// Requests from this client should fall back from application/cbor to application/json.
-	if _, err := client.Namespaces().Create(
-		context.TODO(),
-		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-client-415"}},
-		metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}},
-	); err != nil {
-		t.Errorf("expected to receive nil error on subsequent cbor request, got: %v", err)
-	}
+			// Requests from this client should fall back from application/cbor to application/json.
+			if _, err := client.Namespaces().Create(
+				context.TODO(),
+				&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-client-415"}},
+				metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}},
+			); err != nil {
+				t.Errorf("expected to receive nil error on subsequent cbor request, got: %v", err)
+			}
 
-	// The circuit breaker trips on a per-client basis, so it should not begin tripped for a
-	// fresh client with identical config.
-	client, err = corev1client.NewForConfig(config)
-	if err != nil {
-		t.Fatal(err)
-	}
+			// The circuit breaker trips on a per-client basis, so it should not begin tripped for a
+			// fresh client with identical config.
+			client, err = corev1client.NewForConfig(config)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	if _, err := client.Namespaces().Create(
-		context.TODO(),
-		&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-client-415"}},
-		metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}},
-	); !apierrors.IsUnsupportedMediaType(err) {
-		t.Errorf("expected to receive unsupported media type on cbor request with fresh client, got: %v", err)
+			if _, err := client.Namespaces().Create(
+				context.TODO(),
+				&v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-client-415"}},
+				metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}},
+			); !apierrors.IsUnsupportedMediaType(err) {
+				t.Errorf("expected to receive unsupported media type on cbor request with fresh client, got: %v", err)
+			}
+		})
 	}
 }
