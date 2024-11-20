@@ -88,6 +88,7 @@ var _ = SIGDescribe("CPU Manager Metrics", framework.WithSerial(), feature.CPUMa
 					options:                 cpuPolicyOptions,
 				},
 				false,
+				false,
 			)
 			updateKubeletConfig(ctx, f, newCfg, true)
 		})

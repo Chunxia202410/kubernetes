@@ -2893,7 +2893,7 @@ func (kl *Kubelet) canResizePod(pod *v1.Pod) (bool, v1.PodResizeStatus, string) 
 		msg := "Resize cannot be accommodated: "
 		klog.V(3).InfoS(msg, "pod", klog.KObj(pod), "reason", failReason, "message", failMessage)
 		if failReason == kubetypes.ErrorInconsistentCPUAllocation {
-			return false, v1.PodResizeStatusInfeasible, msg
+			return false, v1.PodResizeStatusDeferred, msg
 		}
 		return false, v1.PodResizeStatusDeferred, msg
 	}
