@@ -1171,6 +1171,10 @@ func takeByTopologyNUMAPacked(topo *topology.CPUTopology, availableCPUs cpuset.C
 	// 4. Acquire single threads, preferring to fill partially-allocated cores
 	//    on the same sockets as the whole cores we have already taken in this
 	//    allocation.
+	acc.takeRemainingCPUsForResize()
+	if acc.isSatisfied() {
+		return acc.result, nil
+	}
 	acc.takeRemainingCPUs()
 	if acc.isSatisfied() {
 		return acc.result, nil
