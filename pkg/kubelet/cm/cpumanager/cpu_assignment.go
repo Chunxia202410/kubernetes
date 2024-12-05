@@ -493,117 +493,6 @@ func newCPUAccumulator(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, 
 		}
 	}
 
-	if reusableCPUsForResize != nil {
-		if !reusableCPUsForResize.IsEmpty() {
-			// Increase of CPU resources ( scale up )
-			// Take existing from allocated
-			// CPUs
-			if numCPUs > reusableCPUsForResize.Size() {
-				// scale up ...
-				acc.take(reusableCPUsForResize.Clone())
-			}
-
-			// Decrease of CPU resources ( scale down )
-			// Take delta from allocated CPUs, if mustKeepCPUsForScaleDown
-			// is not nil, use explicetely those. If it is nil
-			// take delta starting from lowest CoreId of CPUs ( TODO esotsal, perhaps not needed).
-			if numCPUs < reusableCPUsForResize.Size() {
-				if mustKeepCPUsForScaleDown != nil {
-					// If explicetely CPUs to keep
-					// during scale down is given ( this requires
-					// addition in container[].resources ... which
-					// could be possible to patch ? Esotsal Note This means
-					// modifying API code
-					if !(mustKeepCPUsForScaleDown.Intersection(reusableCPUsForResize.Clone())).IsEmpty() {
-						acc.take(mustKeepCPUsForScaleDown.Clone())
-					} else {
-						return acc
-					}
-				}
-			}
-
-			if numCPUs == reusableCPUsForResize.Size() {
-				// nothing to do return as is
-				acc.take(reusableCPUsForResize.Clone())
-				return acc
-			}
-		}
-	}
-
-	if reusableCPUsForResize != nil {
-		if !reusableCPUsForResize.IsEmpty() {
-			// Increase of CPU resources ( scale up )
-			// Take existing from allocated
-			// CPUs
-			if numCPUs > reusableCPUsForResize.Size() {
-				// scale up ...
-				acc.take(reusableCPUsForResize.Clone())
-			}
-
-			// Decrease of CPU resources ( scale down )
-			// Take delta from allocated CPUs, if mustKeepCPUsForScaleDown
-			// is not nil, use explicetely those. If it is nil
-			// take delta starting from lowest CoreId of CPUs ( TODO esotsal, perhaps not needed).
-			if numCPUs < reusableCPUsForResize.Size() {
-				if mustKeepCPUsForScaleDown != nil {
-					// If explicetely CPUs to keep
-					// during scale down is given ( this requires
-					// addition in container[].resources ... which
-					// could be possible to patch ? Esotsal Note This means
-					// modifying API code
-					if !(mustKeepCPUsForScaleDown.Intersection(reusableCPUsForResize.Clone())).IsEmpty() {
-						acc.take(mustKeepCPUsForScaleDown.Clone())
-					} else {
-						return acc
-					}
-				}
-			}
-
-			if numCPUs == reusableCPUsForResize.Size() {
-				// nothing to do return as is
-				acc.take(reusableCPUsForResize.Clone())
-				return acc
-			}
-		}
-	}
-
-	if reusableCPUsForResize != nil {
-		if !reusableCPUsForResize.IsEmpty() {
-			// Increase of CPU resources ( scale up )
-			// Take existing from allocated
-			// CPUs
-			if numCPUs > reusableCPUsForResize.Size() {
-				// scale up ...
-				acc.take(reusableCPUsForResize.Clone())
-			}
-
-			// Decrease of CPU resources ( scale down )
-			// Take delta from allocated CPUs, if mustKeepCPUsForScaleDown
-			// is not nil, use explicetely those. If it is nil
-			// take delta starting from lowest CoreId of CPUs ( TODO esotsal, perhaps not needed).
-			if numCPUs < reusableCPUsForResize.Size() {
-				if mustKeepCPUsForScaleDown != nil {
-					// If explicetely CPUs to keep
-					// during scale down is given ( this requires
-					// addition in container[].resources ... which
-					// could be possible to patch ? Esotsal Note This means
-					// modifying API code
-					if !(mustKeepCPUsForScaleDown.Intersection(reusableCPUsForResize.Clone())).IsEmpty() {
-						acc.take(mustKeepCPUsForScaleDown.Clone())
-					} else {
-						return acc
-					}
-				}
-			}
-
-			if numCPUs == reusableCPUsForResize.Size() {
-				// nothing to do return as is
-				acc.take(reusableCPUsForResize.Clone())
-				return acc
-			}
-		}
-	}
-
 	if topo.NumSockets >= topo.NumNUMANodes {
 		acc.numaOrSocketsFirst = &numaFirst{acc}
 	} else {
@@ -1408,7 +1297,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 			// Check that this combination of NUMA nodes has enough CPUs to
 			// satisfy the allocation overall.
 			cpus := acc.details.CPUsInNUMANodes(combo...)
-			if cpus.Size() < acc.numCPUsNeeded {
+			if cpus.Size() < numCPUs {
 				return Continue
 			}
 
@@ -1418,14 +1307,14 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 			for _, numa := range combo {
 				numCPUGroups += (acc.details.CPUsInNUMANodes(numa).Size() / cpuGroupSize)
 			}
-			if (numCPUGroups * cpuGroupSize) < acc.numCPUsNeeded {
+			if (numCPUGroups * cpuGroupSize) < numCPUs {
 				return Continue
 			}
 
 			// Check that each NUMA node in this combination can allocate an
 			// even distribution of CPUs in groups of size 'cpuGroupSize',
 			// modulo some remainder.
-			distribution := (acc.numCPUsNeeded / len(combo) / cpuGroupSize) * cpuGroupSize
+			distribution := (numCPUs / len(combo) / cpuGroupSize) * cpuGroupSize
 			for _, numa := range combo {
 				cpus := acc.details.CPUsInNUMANodes(numa)
 				if cpus.Size() < distribution {
@@ -1449,7 +1338,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 			// Check if there are any remaining CPUs to distribute across the
 			// NUMA nodes once CPUs have been evenly distributed in groups of
 			// size 'cpuGroupSize'.
-			remainder := acc.numCPUsNeeded - (distribution * len(combo))
+			remainder := numCPUs - (distribution * len(combo))
 
 			// Get a list of NUMA nodes to consider pulling the remainder CPUs
 			// from. This list excludes NUMA nodes that don't have at least
@@ -1548,7 +1437,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 		// Otherwise, start allocating CPUs from the NUMA node combination
 		// chosen. First allocate an even distribution of CPUs in groups of
 		// size 'cpuGroupSize' from 'bestCombo'.
-		distribution := (acc.numCPUsNeeded / len(bestCombo) / cpuGroupSize) * cpuGroupSize
+		distribution := (numCPUs / len(bestCombo) / cpuGroupSize) * cpuGroupSize
 		for _, numa := range bestCombo {
 			cpus, _ := takeByTopologyNUMAPacked(acc.topo, acc.details.CPUsInNUMANodes(numa), distribution, cpuSortingStrategy, false, reusableCPUsForResize, mustKeepCPUsForScaleDown)
 			acc.take(cpus)
@@ -1556,7 +1445,7 @@ func takeByTopologyNUMADistributed(topo *topology.CPUTopology, availableCPUs cpu
 
 		// Then allocate any remaining CPUs in groups of size 'cpuGroupSize'
 		// from each NUMA node in the remainder set.
-		remainder := acc.numCPUsNeeded - (distribution * len(bestCombo))
+		remainder := numCPUs - (distribution * len(bestCombo))
 		for remainder > 0 {
 			for _, numa := range bestRemainder {
 				if remainder == 0 {
