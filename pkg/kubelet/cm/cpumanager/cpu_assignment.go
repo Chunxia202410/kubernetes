@@ -567,6 +567,43 @@ func newCPUAccumulator(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, 
 		}
 	}
 
+	if reusableCPUsForResize != nil {
+		if !reusableCPUsForResize.IsEmpty() {
+			// Increase of CPU resources ( scale up )
+			// Take existing from allocated
+			// CPUs
+			if numCPUs > reusableCPUsForResize.Size() {
+				// scale up ...
+				acc.take(reusableCPUsForResize.Clone())
+			}
+
+			// Decrease of CPU resources ( scale down )
+			// Take delta from allocated CPUs, if mustKeepCPUsForScaleDown
+			// is not nil, use explicetely those. If it is nil
+			// take delta starting from lowest CoreId of CPUs ( TODO esotsal, perhaps not needed).
+			if numCPUs < reusableCPUsForResize.Size() {
+				if mustKeepCPUsForScaleDown != nil {
+					// If explicetely CPUs to keep
+					// during scale down is given ( this requires
+					// addition in container[].resources ... which
+					// could be possible to patch ? Esotsal Note This means
+					// modifying API code
+					if !(mustKeepCPUsForScaleDown.Intersection(reusableCPUsForResize.Clone())).IsEmpty() {
+						acc.take(mustKeepCPUsForScaleDown.Clone())
+					} else {
+						return acc
+					}
+				}
+			}
+
+			if numCPUs == reusableCPUsForResize.Size() {
+				// nothing to do return as is
+				acc.take(reusableCPUsForResize.Clone())
+				return acc
+			}
+		}
+	}
+
 	if topo.NumSockets >= topo.NumNUMANodes {
 		acc.numaOrSocketsFirst = &numaFirst{acc}
 	} else {
