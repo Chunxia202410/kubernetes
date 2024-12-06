@@ -5567,6 +5567,16 @@ func ValidatePodEphemeralContainersUpdate(newPod, oldPod *core.Pod, opts PodVali
 	return allErrs
 }
 
+func removeEnvVar(envs []core.EnvVar, nameToRemove string) []core.EnvVar {
+    var newEnvs []core.EnvVar
+    for _, env := range envs {
+        if env.Name != nameToRemove {
+            newEnvs = append(newEnvs, env)
+        }
+    }
+    return newEnvs
+}
+
 // ValidatePodResize tests that a user update to pod container resources is valid.
 // newPod and oldPod must only differ in their Containers[*].Resources and
 // Containers[*].ResizePolicy field.
@@ -5678,23 +5688,18 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 				}
 				//add mustKeepCPUs
 				if existOldMustKeepCPUs == false && (len(container.Env)-len(oldPod.Spec.Containers[ix].Env)) == 1 {
-					container.Env = container.Env[1:] //delete "mustKeepCPUs" in newPod to make newPod equal to oldPod
+					container.Env = removeEnvVar(container.Env, "mustKeepCPUs") //delete "mustKeepCPUs" in newPod to make newPod equal to oldPod
 				}
 				break
 			}
 		}
 		//delete mustKeepCPUs
 		if existNewMustKeepCPUs == false && (len(oldPod.Spec.Containers[ix].Env)-len(container.Env)) == 1 {
-			var tempEnv []core.EnvVar
-			for _, oldEnv := range oldPod.Spec.Containers[ix].Env {
-				if oldEnv.Name == "mustKeepCPUs" {
-					continue
-				}
-				tempEnv = append(tempEnv, oldEnv)
-			}
-			oldPod.Spec.Containers[ix].Env = tempEnv
+			oldPod.Spec.Containers[ix].Env = removeEnvVar(oldPod.Spec.Containers[ix].Env, "mustKeepCPUs")
 		}
 		newContainers = append(newContainers, container)
+		//errs := field.Forbidden(specPath, fmt.Sprintf("existOldMustKeepCPUs:%v, existNewMustKeepCPUs:%v, oldPod.Spec.Containers[ix].Env :%v", existOldMustKeepCPUs, existNewMustKeepCPUs, oldPod.Spec.Containers[ix].Env))
+		//allErrs = append(allErrs, errs)
 	}
 	originalCPUMemPodSpec.Containers = newContainers
 	if !apiequality.Semantic.DeepEqual(originalCPUMemPodSpec, oldPod.Spec) {
