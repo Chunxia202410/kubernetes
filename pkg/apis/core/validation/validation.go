@@ -5668,7 +5668,7 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 		req := dropCPUMemoryUpdates(container.Resources.Requests, oldPod.Spec.Containers[ix].Resources.Requests)
 		container.Resources = core.ResourceRequirements{Limits: lim, Requests: req}
 		container.ResizePolicy = oldPod.Spec.Containers[ix].ResizePolicy // +k8s:verify-mutation:reason=clone
-    // the element named "mustKeepCPUs" in env can be update or add
+                // the element named "mustKeepCPUs" in env can be update or add
 		var existNewMustKeepCPUs bool = false
 		var existOldMustKeepCPUs bool = false
 		for jx, newEnv := range container.Env {
@@ -5698,8 +5698,6 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 			oldPod.Spec.Containers[ix].Env = removeEnvVar(oldPod.Spec.Containers[ix].Env, "mustKeepCPUs")
 		}
 		newContainers = append(newContainers, container)
-		//errs := field.Forbidden(specPath, fmt.Sprintf("existOldMustKeepCPUs:%v, existNewMustKeepCPUs:%v, oldPod.Spec.Containers[ix].Env :%v", existOldMustKeepCPUs, existNewMustKeepCPUs, oldPod.Spec.Containers[ix].Env))
-		//allErrs = append(allErrs, errs)
 	}
 	originalCPUMemPodSpec.Containers = newContainers
 	if !apiequality.Semantic.DeepEqual(originalCPUMemPodSpec, oldPod.Spec) {
