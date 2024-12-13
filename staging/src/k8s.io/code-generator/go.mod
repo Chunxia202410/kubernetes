@@ -6,6 +6,8 @@ go 1.23.0
 
 godebug default=go1.23
 
+godebug winsymlink=0
+
 require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/google/gnostic-models v0.6.8
