@@ -25647,7 +25647,7 @@ func TestValidatePodResize(t *testing.T) {
 					podtest.SetContainerEnv(
 						[]core.EnvVar{
 							{
-								Name: envName1,
+								Name:  envName1,
 								Value: envValue1,
 							},
 						},
@@ -25665,11 +25665,11 @@ func TestValidatePodResize(t *testing.T) {
 					podtest.SetContainerEnv(
 						[]core.EnvVar{
 							{
-								Name: envName1,
+								Name:  envName1,
 								Value: envValue1,
 							},
 							{
-								Name: envName2,
+								Name:  envName2,
 								Value: envValue2,
 							},
 						},
@@ -26071,38 +26071,38 @@ func TestValidatePodResize(t *testing.T) {
 			err:  "spec: Forbidden: only cpu and memory resources for sidecar containers are mutable",
 		},
 		{
-			test: "Pod env:mustKeepCPUs change value",
-			old:  mkPodWith2Env("env1", "a","mustKeepCPUs", "0"),
-			new:  mkPodWith2Env("env1", "a","mustKeepCPUs", "1"),
-			err:  "",
+			test: "Pod env:mustKeepCPUs change value is forbidden",
+			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "0"),
+			new:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
+			err:  "spec: Forbidden: only cpu and memory resources are mutable",
 		},
 		{
-			test: "Pod env:mustKeepCPUs add",
+			test: "Pod env:mustKeepCPUs add value is forbidden",
 			old:  mkPodWith1Env("env1", "a"),
-			new:  mkPodWith2Env("env1", "a","mustKeepCPUs", "1"),
-			err:  "",
+			new:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
+			err:  "spec: Forbidden: only cpu and memory resources are mutable",
 		},
 		{
-			test: "Pod env:mustKeepCPUs delete",
-			old:  mkPodWith2Env("env1", "a","mustKeepCPUs", "1"),
+			test: "Pod env:mustKeepCPUs delete is forbidden",
+			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
 			new:  mkPodWith1Env("env1", "a"),
-			err:  "",
+			err:  "spec: Forbidden: only cpu and memory resources are mutable",
 		},
 		{
 			test: "Pod env:env1 change is forbidden",
-			old:  mkPodWith2Env("env1", "a","mustKeepCPUs", "0"),
-			new:  mkPodWith2Env("env1", "b","mustKeepCPUs", "0"),
+			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "0"),
+			new:  mkPodWith2Env("env1", "b", "mustKeepCPUs", "0"),
 			err:  "spec: Forbidden: only cpu and memory resources are mutable",
 		},
 		{
 			test: "Pod env:env1 add is forbidden",
 			old:  mkPodWith1Env("mustKeepCPUs", "0"),
-			new:  mkPodWith2Env("env1", "a","mustKeepCPUs", "1"),
+			new:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
 			err:  "spec: Forbidden: only cpu and memory resources are mutable",
 		},
 		{
 			test: "Pod env:env1 delete is forbidden",
-			old:  mkPodWith2Env("env1", "a","mustKeepCPUs", "1"),
+			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
 			new:  mkPodWith1Env("mustKeepCPUs", "0"),
 			err:  "spec: Forbidden: only cpu and memory resources are mutable",
 		},
