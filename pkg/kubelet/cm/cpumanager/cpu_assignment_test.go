@@ -1101,7 +1101,7 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			cpuset.New(0),
 			2,
 			"",
-			cpuset.New(0,4),
+			cpuset.New(0, 4),
 		},
 		{
 			"Allocated 1 CPU, and take 2 cpu from single socket with HT, some cpus are taken, no sibling CPU of allocated CPU",
@@ -1111,7 +1111,7 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			cpuset.New(0),
 			2,
 			"",
-			cpuset.New(0,6),
+			cpuset.New(0, 6),
 		},
 		{
 			"Allocated 1 CPU, and take 3 cpu from single socket with HT, some cpus are taken, no sibling CPU of allocated CPU",
@@ -1121,7 +1121,7 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			cpuset.New(0),
 			3,
 			"",
-			cpuset.New(0,1,5),
+			cpuset.New(0, 1, 5),
 		},
 		{
 			"Allocated 1 CPU, and take all cpu from single socket with HT",
@@ -1141,7 +1141,7 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			cpuset.New(11),
 			2,
 			"",
-			cpuset.New(5,11),
+			cpuset.New(5, 11),
 		},
 		{
 			"Allocated 1 CPU, take a socket of cpus from dual socket with HT",
@@ -1151,7 +1151,7 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			cpuset.New(11),
 			6,
 			"",
-			cpuset.New(1,3,5,7,9,11),
+			cpuset.New(1, 3, 5, 7, 9, 11),
 		},
 		{
 			"Allocated 1 CPU, take a socket of cpus and 1 core of CPU from dual socket with HT",
@@ -1161,7 +1161,7 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			cpuset.New(11),
 			8,
 			"",
-			cpuset.New(0,1,3,5,6,7,9,11),
+			cpuset.New(0, 1, 3, 5, 6, 7, 9, 11),
 		},
 		{
 			"Allocated 1 CPU, take a socket of cpus from dual socket with multi-numa-per-socket with HT",
@@ -1188,7 +1188,7 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			topoDualSocketMultiNumaPerSocketHT,
 			StaticPolicyOptions{},
 			mustParseCPUSet(t, "0-38,40-58,60-79"),
-			cpuset.New(39,59),
+			cpuset.New(39, 59),
 			60,
 			"",
 			mustParseCPUSet(t, "0-19,30-59,70-79"),
@@ -1317,7 +1317,6 @@ func TestTakeByTopologyNUMAPackedForResize(t *testing.T) {
 			}
 
 			result, err := takeByTopologyNUMAPacked(tc.topo, tc.availableCPUs, tc.numCPUs, strategy, tc.opts.PreferAlignByUncoreCacheOption, &tc.reusableCPUs, nil)
-
 
 			if tc.expErr != "" && err != nil && err.Error() != tc.expErr {
 				t.Errorf("expected error to be [%v] but it was [%v]", tc.expErr, err)

@@ -5662,8 +5662,8 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 		}
 
 		// the element named "mustKeepCPUs" in env can be update or add
-		var existNewMustKeepCPUs bool = false
-		var existOldMustKeepCPUs bool = false
+		existNewMustKeepCPUs := false
+		existOldMustKeepCPUs := false
 		for jx, newEnv := range container.Env {
 			if newEnv.Name == "mustKeepCPUs" {
 				existNewMustKeepCPUs = true
@@ -5671,7 +5671,7 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 				if err != nil {
 					allErrs = append(allErrs, field.Invalid(fldPath, newEnv, "Check mustKeepCPUs format, only number \",\" and \"-\" are allowed"))
 				}
-				//change mustKeepCPUs
+				// Change mustKeepCPUs
 				for _, oldEnv := range oldPod.Spec.Containers[ix].Env {
 					if oldEnv.Name == "mustKeepCPUs" {
 						existOldMustKeepCPUs = true
@@ -5679,15 +5679,16 @@ func ValidatePodResize(newPod, oldPod *core.Pod, opts PodValidationOptions) fiel
 						break
 					}
 				}
-				//add mustKeepCPUs
-				if existOldMustKeepCPUs == false && (len(container.Env)-len(oldPod.Spec.Containers[ix].Env)) == 1 {
-					container.Env = removeEnvVar(container.Env, "mustKeepCPUs") //delete "mustKeepCPUs" in newPod to make newPod equal to oldPod
+				// Add mustKeepCPUs
+				if !existOldMustKeepCPUs && (len(container.Env)-len(oldPod.Spec.Containers[ix].Env)) == 1 {
+					// Delete "mustKeepCPUs" in newPod to make newPod equal to oldPod
+					container.Env = removeEnvVar(container.Env, "mustKeepCPUs")
 				}
 				break
 			}
 		}
-		//delete mustKeepCPUs
-		if existNewMustKeepCPUs == false && (len(oldPod.Spec.Containers[ix].Env)-len(container.Env)) == 1 {
+		// Delete mustKeepCPUs
+		if !existNewMustKeepCPUs && (len(oldPod.Spec.Containers[ix].Env)-len(container.Env)) == 1 {
 			oldPod.Spec.Containers[ix].Env = removeEnvVar(oldPod.Spec.Containers[ix].Env, "mustKeepCPUs")
 		}
 		newContainers = append(newContainers, container)
