@@ -26071,22 +26071,22 @@ func TestValidatePodResize(t *testing.T) {
 			err:  "spec: Forbidden: only cpu and memory resources for sidecar containers are mutable",
 		},
 		{
-			test: "Pod env:mustKeepCPUs change value is forbidden",
+			test: "Pod env:mustKeepCPUs change value",
 			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "0"),
 			new:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
-			err:  "spec: Forbidden: only cpu and memory resources are mutable",
+			err:  "",
 		},
 		{
-			test: "Pod env:mustKeepCPUs add value is forbidden",
+			test: "Pod env:mustKeepCPUs add value",
 			old:  mkPodWith1Env("env1", "a"),
 			new:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
-			err:  "spec: Forbidden: only cpu and memory resources are mutable",
+			err:  "",
 		},
 		{
-			test: "Pod env:mustKeepCPUs delete is forbidden",
+			test: "Pod env:mustKeepCPUs delete",
 			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
 			new:  mkPodWith1Env("env1", "a"),
-			err:  "spec: Forbidden: only cpu and memory resources are mutable",
+			err:  "",
 		},
 		{
 			test: "Pod env:env1 change is forbidden",
@@ -26105,6 +26105,12 @@ func TestValidatePodResize(t *testing.T) {
 			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
 			new:  mkPodWith1Env("mustKeepCPUs", "0"),
 			err:  "spec: Forbidden: only cpu and memory resources are mutable",
+		},
+		{
+			test: "Pod env:mustKeepCPUs delete",
+			old:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1"),
+			new:  mkPodWith2Env("env1", "a", "mustKeepCPUs", "1s2"),
+			err:  "Check mustKeepCPUs format, only number \",\" and \"-\" are allowed",
 		},
 	}
 
