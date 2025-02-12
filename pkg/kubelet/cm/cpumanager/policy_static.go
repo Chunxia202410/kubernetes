@@ -521,34 +521,6 @@ func (p *staticPolicy) GetMustKeepCPUs(container *v1.Container, oldCpuset cpuset
 	return nil
 }
 
-func (p *staticPolicy) GetMustKeepCPUs(container *v1.Container, oldCpuset cpuset.CPUSet) *cpuset.CPUSet {
-	mustKeepCPUs := cpuset.New()
-	for _, envVar := range container.Env {
-		if envVar.Name == "mustKeepCPUs" {
-			mustKeepCPUsInEnv, err := cpuset.Parse(envVar.Value)
-			if err == nil && mustKeepCPUsInEnv.Size() != 0 {
-				mustKeepCPUs = oldCpuset.Intersection(mustKeepCPUsInEnv)
-			}
-			klog.InfoS("mustKeepCPUs ", "is", mustKeepCPUs)
-			if p.options.FullPhysicalCPUsOnly {
-				// mustKeepCPUs must be aligned to the physical core
-				if (mustKeepCPUs.Size() % 2)!= 0 {
-					return nil
-				}
-				mustKeepCPUsDetail := p.topology.CPUDetails.KeepOnly(mustKeepCPUs)
-				mustKeepCPUsDetailCores := mustKeepCPUsDetail.Cores()
-				if (mustKeepCPUs.Size() / mustKeepCPUsDetailCores.Size()) != p.cpuGroupSize {
-					klog.InfoS("mustKeepCPUs is nil")
-					return nil
-				}
-			}
-			return &mustKeepCPUs
-		}
-	}
-	klog.InfoS("mustKeepCPUs is nil")
-	return nil
-}
-
 // getAssignedCPUsOfSiblings returns assigned cpus of given container's siblings(all containers other than the given container) in the given pod `podUID`.
 func getAssignedCPUsOfSiblings(s state.State, podUID string, containerName string) cpuset.CPUSet {
 	assignments := s.GetCPUAssignments()
