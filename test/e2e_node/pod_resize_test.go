@@ -2439,6 +2439,7 @@ func doMultiPodResizeTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalSc
 	})
 }
 
+//Test Pod InPlace Resize Container extended cases
 var _ = SIGDescribe("Pod InPlace Resize Container Extended Test", framework.WithSerial(), func() {
 
 	policiesGeneralAvailability := []cpuManagerPolicyConfig{
