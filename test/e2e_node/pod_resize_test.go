@@ -1874,7 +1874,6 @@ func doPodResizeExtendTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalS
 	}
 
 	noRestart := v1.NotRequired
-	//doRestart := v1.RestartContainer
 	testsWithFalseFullCPUs := []testCase{
 		{
 			name: "1 Guaranteed QoS pod, one container - increase CPU & memory, FullPCPUsOnlyOption = false",
@@ -2439,9 +2438,7 @@ func doMultiPodResizeTests(policy cpuManagerPolicyConfig, isInPlacePodVerticalSc
 	})
 }
 
-//Test Pod InPlace Resize Container extended cases
 var _ = SIGDescribe("Pod InPlace Resize Container Extended Test", framework.WithSerial(), func() {
-
 	policiesGeneralAvailability := []cpuManagerPolicyConfig{
 		{
 			name:  string(cpumanager.PolicyStatic),

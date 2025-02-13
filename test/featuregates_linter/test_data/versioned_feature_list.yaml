@@ -184,6 +184,10 @@
     lockToDefault: false
     preRelease: Beta
     version: "1.32"
+  - default: true
+    lockToDefault: true
+    preRelease: GA
+    version: "1.33"
 - name: CBORServingAndStorage
   versionedSpecs:
   - default: false
@@ -1162,10 +1166,14 @@
     version: "1.29"
 - name: ServiceAccountNodeAudienceRestriction
   versionedSpecs:
-  - default: true
+  - default: false
     lockToDefault: false
     preRelease: Beta
     version: "1.32"
+  - default: true
+    lockToDefault: false
+    preRelease: Beta
+    version: "1.33"
 - name: ServiceAccountTokenJTI
   versionedSpecs:
   - default: false
@@ -1294,6 +1302,10 @@
     lockToDefault: false
     preRelease: Beta
     version: "1.30"
+  - default: true
+    lockToDefault: false
+    preRelease: Deprecated
+    version: "1.33"
 - name: StorageVersionAPI
   versionedSpecs:
   - default: false

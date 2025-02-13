@@ -489,6 +489,35 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 	p.updateCPUsToReuse(pod, container, cpuset)
 	p.updateMetricsOnAllocate(cpuset)
 
+	klog.V(4).InfoS("Allocated exclusive CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "cpuset", cpuset)
+	return nil
+}
+
+func (p *staticPolicy) GetMustKeepCPUs(container *v1.Container, oldCpuset cpuset.CPUSet) *cpuset.CPUSet {
+	mustKeepCPUs := cpuset.New()
+	for _, envVar := range container.Env {
+		if envVar.Name == "mustKeepCPUs" {
+			mustKeepCPUsInEnv, err := cpuset.Parse(envVar.Value)
+			if err == nil && mustKeepCPUsInEnv.Size() != 0 {
+				mustKeepCPUs = oldCpuset.Intersection(mustKeepCPUsInEnv)
+			}
+			klog.InfoS("mustKeepCPUs ", "is", mustKeepCPUs)
+			if p.options.FullPhysicalCPUsOnly {
+				// mustKeepCPUs must be aligned to the physical core
+				if (mustKeepCPUs.Size() % 2)!= 0 {
+					return nil
+				}
+				mustKeepCPUsDetail := p.topology.CPUDetails.KeepOnly(mustKeepCPUs)
+				mustKeepCPUsDetailCores := mustKeepCPUsDetail.Cores()
+				if (mustKeepCPUs.Size() / mustKeepCPUsDetailCores.Size()) != p.cpuGroupSize {
+					klog.InfoS("mustKeepCPUs is nil")
+					return nil
+				}
+			}
+			return &mustKeepCPUs
+		}
+	}
+	klog.InfoS("mustKeepCPUs is nil")
 	return nil
 }
 
@@ -603,7 +632,9 @@ func (p *staticPolicy) allocateCPUs(s state.State, numCPUs int, numaAffinity bit
 }
 
 func (p *staticPolicy) guaranteedCPUs(pod *v1.Pod, container *v1.Container) int {
-	if v1qos.GetPodQOS(pod) != v1.PodQOSGuaranteed {
+	qos := v1qos.GetPodQOS(pod)
+	if qos != v1.PodQOSGuaranteed {
+		klog.V(5).InfoS("Exclusive CPU allocation skipped, pod QoS is not guaranteed", "pod", klog.KObj(pod), "containerName", container.Name, "qos", qos)
 		return 0
 	}
 	cpuQuantity := container.Resources.Requests[v1.ResourceCPU]
@@ -631,7 +662,9 @@ func (p *staticPolicy) guaranteedCPUs(pod *v1.Pod, container *v1.Container) int 
 			}
 		}
 	}
-	if cpuQuantity.Value()*1000 != cpuQuantity.MilliValue() {
+	cpuValue := cpuQuantity.Value()
+	if cpuValue*1000 != cpuQuantity.MilliValue() {
+		klog.V(5).InfoS("Exclusive CPU allocation skipped, pod requested non-integral CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "cpu", cpuValue)
 		return 0
 	}
 	// Safe downcast to do for all systems with < 2.1 billion CPUs.
