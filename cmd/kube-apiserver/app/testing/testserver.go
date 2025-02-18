@@ -57,8 +57,6 @@ import (
 	basecompatibility "k8s.io/component-base/compatibility"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	logsapi "k8s.io/component-base/logs/api/v1"
-	zpagesfeatures "k8s.io/component-base/zpages/features"
-	"k8s.io/component-base/zpages/flagz"
 	"k8s.io/klog/v2"
 	"k8s.io/kube-aggregator/pkg/apiserver"
 	"k8s.io/kubernetes/pkg/features"
@@ -209,8 +207,7 @@ func StartTestServer(t ktesting.TB, instanceOptions *TestServerInstanceOptions, 
 		s.GenericServerRunOptions.RequestTimeout = instanceOptions.RequestTimeout
 	}
 
-	namedFlagSets := s.Flags()
-	for _, f := range namedFlagSets.FlagSets {
+	for _, f := range s.Flags().FlagSets {
 		fs.AddFlagSet(f)
 	}
 
@@ -343,9 +340,6 @@ func StartTestServer(t ktesting.TB, instanceOptions *TestServerInstanceOptions, 
 
 	if err := fs.Parse(customFlags); err != nil {
 		return result, err
-	}
-	if utilfeature.DefaultFeatureGate.Enabled(zpagesfeatures.ComponentFlagz) {
-		s.Flagz = flagz.NamedFlagSetsReader{FlagSets: namedFlagSets}
 	}
 
 	// the RequestHeader options pointer gets replaced in the case of EnableCertAuth override
