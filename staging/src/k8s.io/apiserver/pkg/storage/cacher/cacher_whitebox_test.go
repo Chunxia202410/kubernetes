@@ -61,7 +61,7 @@ import (
 	"k8s.io/utils/pointer"
 )
 
-func newTestCacherWithoutSyncing(s storage.Interface, c clock.WithTicker) (*Cacher, storage.Versioner, error) {
+func newTestCacherWithoutSyncing(s storage.Interface) (*Cacher, storage.Versioner, error) {
 	prefix := "pods"
 	config := Config{
 		Storage:             s,
@@ -85,7 +85,7 @@ func newTestCacherWithoutSyncing(s storage.Interface, c clock.WithTicker) (*Cach
 		NewFunc:     func() runtime.Object { return &example.Pod{} },
 		NewListFunc: func() runtime.Object { return &example.PodList{} },
 		Codec:       codecs.LegacyCodec(examplev1.SchemeGroupVersion),
-		Clock:       c,
+		Clock:       clock.RealClock{},
 	}
 	cacher, err := NewCacherFromConfig(config)
 
@@ -93,7 +93,7 @@ func newTestCacherWithoutSyncing(s storage.Interface, c clock.WithTicker) (*Cach
 }
 
 func newTestCacher(s storage.Interface) (*Cacher, storage.Versioner, error) {
-	cacher, versioner, err := newTestCacherWithoutSyncing(s, clock.RealClock{})
+	cacher, versioner, err := newTestCacherWithoutSyncing(s)
 	if err != nil {
 		return nil, versioner, err
 	}
@@ -605,7 +605,7 @@ func TestTooManyRequestsNotReturned(t *testing.T) {
 
 	dummyErr := fmt.Errorf("dummy")
 	backingStorage := &dummyStorage{err: dummyErr}
-	cacher, _, err := newTestCacherWithoutSyncing(backingStorage, clock.RealClock{})
+	cacher, _, err := newTestCacherWithoutSyncing(backingStorage)
 	if err != nil {
 		t.Fatalf("Couldn't create cacher: %v", err)
 	}
@@ -732,7 +732,7 @@ func TestWatchNotHangingOnStartupFailure(t *testing.T) {
 	// constantly failing lists to the underlying storage.
 	dummyErr := fmt.Errorf("dummy")
 	backingStorage := &dummyStorage{err: dummyErr}
-	cacher, _, err := newTestCacherWithoutSyncing(backingStorage, clock.RealClock{})
+	cacher, _, err := newTestCacherWithoutSyncing(backingStorage)
 	if err != nil {
 		t.Fatalf("Couldn't create cacher: %v", err)
 	}
