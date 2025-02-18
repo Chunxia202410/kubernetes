@@ -19,7 +19,6 @@ package windows
 import (
 	"context"
 	"fmt"
-	appsv1 "k8s.io/api/apps/v1"
 	"net"
 	"strconv"
 
@@ -67,7 +66,7 @@ var _ = sigDescribe("Services", skipUnlessWindows(func() {
 
 		ginkgo.By("creating Pod to be part of service " + serviceName)
 		// tweak the Jig to use windows...
-		windowsNodeSelectorTweak := func(rc *appsv1.Deployment) {
+		windowsNodeSelectorTweak := func(rc *v1.ReplicationController) {
 			rc.Spec.Template.Spec.NodeSelector = map[string]string{
 				"kubernetes.io/os": "windows",
 			}
