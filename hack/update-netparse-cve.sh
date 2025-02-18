@@ -36,7 +36,7 @@ PATH="${GOBIN}:${PATH}"
 
 # Install golangci-lint
 echo 'installing net parser converter'
-GOTOOLCHAIN="$(kube::golang::hack_tools_gotoolchain)" go -C "${KUBE_ROOT}/hack/tools" install github.com/aojea/sloppy-netparser
+go -C "${KUBE_ROOT}/hack/tools" install github.com/aojea/sloppy-netparser
 
 cd "${KUBE_ROOT}"
 

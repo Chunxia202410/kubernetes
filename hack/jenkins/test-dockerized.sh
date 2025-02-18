@@ -27,11 +27,7 @@ set -o xtrace
 export PATH=${GOPATH}/bin:${PWD}/third_party/etcd:/usr/local/go/bin:${PATH}
 
 # Install tools we need
-hack_tools_gotoolchain="${GOTOOLCHAIN:-}"
-if [ -n "${KUBE_HACK_TOOLS_GOTOOLCHAIN:-}" ]; then
-  hack_tools_gotoolchain="${KUBE_HACK_TOOLS_GOTOOLCHAIN}";
-fi
-GOTOOLCHAIN="${hack_tools_gotoolchain}" go -C "./hack/tools" install gotest.tools/gotestsum
+go -C "./hack/tools" install gotest.tools/gotestsum
 
 # Disable coverage report
 export KUBE_COVER="n"
