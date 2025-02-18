@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -38,7 +39,6 @@ import (
 
 	"k8s.io/kubernetes/pkg/serviceaccount"
 
-	utilnettesting "k8s.io/apimachinery/pkg/util/net/testing"
 	externaljwtv1alpha1 "k8s.io/externaljwt/apis/v1alpha1"
 )
 
@@ -258,7 +258,8 @@ func TestExternalTokenGenerator(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			ctx := context.Background()
 
-			sockname := utilnettesting.MakeSocketNameForTest(t, fmt.Sprintf("test-external-token-generator-%d-%d.sock", time.Now().Nanosecond(), i))
+			sockname := fmt.Sprintf("@test-external-token-generator-%d-%d.sock", time.Now().Nanosecond(), i)
+			t.Cleanup(func() { _ = os.Remove(sockname) })
 
 			addr := &net.UnixAddr{Name: sockname, Net: "unix"}
 			listener, err := net.ListenUnix(addr.Network(), addr)
