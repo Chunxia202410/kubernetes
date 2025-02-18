@@ -435,15 +435,17 @@ apiserver_watch_cache_consistent_read_total{fallback="true", resource="pods", su
 				podList.ResourceVersion = tc.watchCacheRV
 				return nil
 			}
-			c := testingclock.NewFakeClock(time.Now())
-			cacher, _, err := newTestCacherWithoutSyncing(backingStorage, c)
+			// TODO: Use fake clock for this test to reduce execution time.
+			cacher, _, err := newTestCacher(backingStorage)
 			if err != nil {
 				t.Fatalf("Couldn't create cacher: %v", err)
 			}
 			defer cacher.Stop()
 			proxy := NewCacheProxy(cacher, backingStorage)
-			if err := cacher.ready.wait(context.Background()); err != nil {
-				t.Fatalf("unexpected error waiting for the cache to be ready")
+			if !utilfeature.DefaultFeatureGate.Enabled(features.ResilientWatchCacheInitialization) {
+				if err := cacher.ready.wait(context.Background()); err != nil {
+					t.Fatalf("unexpected error waiting for the cache to be ready")
+				}
 			}
 
 			if fmt.Sprintf("%d", cacher.watchCache.resourceVersion) != tc.watchCacheRV {
@@ -464,28 +466,8 @@ apiserver_watch_cache_consistent_read_total{fallback="true", resource="pods", su
 				return nil
 			}
 			result := &example.PodList{}
-
-			ctx, clockStepCancelFn := context.WithTimeout(context.TODO(), time.Minute)
-			defer clockStepCancelFn()
-			if tc.expectBlock {
-				go func(ctx context.Context) {
-					for {
-						select {
-						case <-ctx.Done():
-							return
-						default:
-							if c.HasWaiters() {
-								c.Step(blockTimeout)
-							}
-							time.Sleep(time.Millisecond)
-						}
-					}
-				}(ctx)
-			}
-
 			start := cacher.clock.Now()
 			err = proxy.GetList(context.TODO(), "pods/ns", storage.ListOptions{ResourceVersion: ""}, result)
-			clockStepCancelFn()
 			duration := cacher.clock.Since(start)
 			if (err != nil) != tc.expectError {
 				t.Fatalf("Unexpected error err: %v", err)
