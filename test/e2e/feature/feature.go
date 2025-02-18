@@ -311,6 +311,9 @@ var (
 	// Testing node allocatable validations
 	NodeAllocatable = framework.WithFeature(framework.ValidFeatures.Add("NodeAllocatable"))
 
+	// TODO: document the feature (owning SIG, when to use this feature for a test)
+	NodeAuthenticator = framework.WithFeature(framework.ValidFeatures.Add("NodeAuthenticator"))
+
 	// Owner: sig-node
 	// Node Problem Detect e2e tests in tree.
 	NodeProblemDetector = framework.WithFeature(framework.ValidFeatures.Add("NodeProblemDetector"))

@@ -23,7 +23,9 @@ import (
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubernetes/pkg/cluster/ports"
+	"k8s.io/kubernetes/test/e2e/feature"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
@@ -34,7 +36,7 @@ import (
 	"github.com/onsi/gomega"
 )
 
-var _ = SIGDescribe("NodeAuthenticator", func() {
+var _ = SIGDescribe(feature.NodeAuthenticator, func() {
 
 	f := framework.NewDefaultFramework("node-authn")
 	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
@@ -66,6 +68,18 @@ var _ = SIGDescribe("NodeAuthenticator", func() {
 	})
 
 	ginkgo.It("The kubelet can delegate ServiceAccount tokens to the API server", func(ctx context.Context) {
+		ginkgo.By("create a new ServiceAccount for authentication")
+		trueValue := true
+		newSA := &v1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: ns,
+				Name:      "node-auth-newsa",
+			},
+			AutomountServiceAccountToken: &trueValue,
+		}
+		_, err := f.ClientSet.CoreV1().ServiceAccounts(ns).Create(ctx, newSA, metav1.CreateOptions{})
+		framework.ExpectNoError(err, "failed to create service account (%s:%s)", ns, newSA.Name)
+
 		pod := createNodeAuthTestPod(ctx, f)
 
 		for _, nodeIP := range nodeIPs {
