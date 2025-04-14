@@ -19,6 +19,7 @@ package cpumanager
 import (
 	"fmt"
 	"strconv"
+	"sort"
 
 	v1 "k8s.io/api/core/v1"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -51,6 +52,11 @@ type SMTAlignmentError struct {
 	CpusPerCore           int
 	AvailablePhysicalCPUs int
 	CausedByPhysicalCPUs  bool
+}
+
+type CpuUsage struct {
+	ID    int
+	Usage uint64
 }
 
 func (e SMTAlignmentError) Error() string {
@@ -444,7 +450,7 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 					klog.InfoS("Topology Affinity", "pod", klog.KObj(pod), "containerName", container.Name, "affinity", hint)
 					// Attempt new allocation ( reusing allocated CPUs ) according to the NUMA affinity contained in the hint
 					// Since NUMA affinity container in the hint is unmutable already allocated CPUs pass the criteria
-					mustKeepCPUsForResize := p.GetMustKeepCPUs(container, cpuset)
+					mustKeepCPUsForResize := p.GetMustKeepCPUs(container, cpuset, numCPUs)
 					newallocatedcpuset, err := p.allocateCPUs(s, numCPUs, hint.NUMANodeAffinity, p.cpusToReuse[string(pod.UID)], &cpusInUseByPodContainerToResize, mustKeepCPUsForResize)
 					if err != nil {
 						klog.ErrorS(err, "Static policy: Unable to allocate new CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "numCPUs", numCPUs)
@@ -497,33 +503,51 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 	return nil
 }
 
-func (p *staticPolicy) GetMustKeepCPUs(container *v1.Container, oldCpuset cpuset.CPUSet) *cpuset.CPUSet {
+func(p *staticPolicy) GetMustKeepCPUs(container *v1.Container, oldCpuset cpuset.CPUSet, numCPUs int) *cpuset.CPUSet {
 	mustKeepCPUs := cpuset.New()
-	for _, envVar := range container.Env {
-		if envVar.Name == "mustKeepCPUs" {
-			mustKeepCPUsInEnv, err := cpuset.Parse(envVar.Value)
-			if err == nil && mustKeepCPUsInEnv.Size() != 0 {
-				mustKeepCPUs = oldCpuset.Intersection(mustKeepCPUsInEnv)
-			}
-			klog.InfoS("mustKeepCPUs ", "is", mustKeepCPUs)
-			if p.options.FullPhysicalCPUsOnly {
-				// mustKeepCPUs must be aligned to the physical core
-				if (mustKeepCPUs.Size() % 2) != 0 {
-					return nil
-				}
-				mustKeepCPUsDetail := p.topology.CPUDetails.KeepOnly(mustKeepCPUs)
-				mustKeepCPUsDetailCores := mustKeepCPUsDetail.Cores()
-				if (mustKeepCPUs.Size() / mustKeepCPUsDetailCores.Size()) != p.cpuGroupSize {
-					klog.InfoS("mustKeepCPUs is nil")
-					return nil
-				}
-			}
-			return &mustKeepCPUs
+	klog.InfoS("GetMustKeepCPUs", "container.Resources.PerCpu", container.Resources.PerCpu, "oldCpuset", oldCpuset, "numCPUs", numCPUs)
+	perCPU := container.Resources.PerCpu
+	if numCPUs <= 0 || oldCpuset.Size() == 0 || len(perCPU) == 0 {
+		 return nil
+	 }
+	
+	candidates := make([]CpuUsage, 0, oldCpuset.Size())
+	for _, cpu := range oldCpuset.UnsortedList() {
+	 //klog.InfoS("GetMustKeepCPUs", "cpu", cpu)
+		if cpu < len(perCPU) && perCPU[cpu] != 0 {
+			candidates = append(candidates, CpuUsage{
+				ID:    cpu,
+				Usage: perCPU[cpu],
+			})
 		}
 	}
-	klog.InfoS("mustKeepCPUs is nil")
-	return nil
-}
+ 
+	//klog.InfoS("GetMustKeepCPUs", "candidates", candidates, "perCPU", perCPU)
+ 
+	sort.Slice(candidates, func(i, j int) bool {
+		 if candidates[i].Usage == candidates[j].Usage {
+			 return candidates[i].ID < candidates[j].ID
+		 }
+		 return candidates[i].Usage > candidates[j].Usage
+	 })
+	 //klog.InfoS("GetMustKeepCPUs", "candidates", candidates)
+ 
+	 resultCount := min(numCPUs, len(candidates))
+	 //klog.InfoS("GetMustKeepCPUs", "resultCount", resultCount)
+	 if resultCount <= 0 {
+		 return nil
+	 }
+ 
+	result := make([]int, resultCount)
+	for i := 0; i < resultCount; i++ {
+		result[i] = candidates[i].ID
+	}
+ 
+	mustKeepCPUs = cpuset.New(result...)
+ 
+	klog.InfoS("GetMustKeepCPUs", "mustKeepCPUs", mustKeepCPUs, "result", result, "resultCount", resultCount)
+	return &mustKeepCPUs
+ }
 
 // getAssignedCPUsOfSiblings returns assigned cpus of given container's siblings(all containers other than the given container) in the given pod `podUID`.
 func getAssignedCPUsOfSiblings(s state.State, podUID string, containerName string) cpuset.CPUSet {
