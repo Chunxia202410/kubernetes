@@ -68,6 +68,11 @@ type Manager interface {
 	// SetAllocatedResources checkpoints the resources allocated to a pod's containers.
 	SetAllocatedResources(allocatedPod *v1.Pod) error
 
+	SetAllocatedResourcesFromAllocateCpus(podUID types.UID, containerName string, request int64) error
+
+	// GetAllocatedResources checkpoints the resources allocated to a pod's containers.
+	GetAllocatedResources(podUID types.UID, containerName string) (v1.ResourceRequirements, bool)
+
 	// SetActuatedResources records the actuated resources of the given container (or the entire
 	// pod, if actuatedContainer is nil).
 	SetActuatedResources(allocatedPod *v1.Pod, actuatedContainer *v1.Container) error
@@ -215,6 +220,7 @@ func (m *manager) Run(ctx context.Context) {
 }
 
 func (m *manager) RetryPendingResizes() []*v1.Pod {
+	klog.V(4).InfoS("RetryPendingResizes enter")
 	m.allocationMutex.Lock()
 	defer m.allocationMutex.Unlock()
 
@@ -444,7 +450,17 @@ func updatePodFromAllocation(pod *v1.Pod, allocs state.PodResourceInfoMap) (*v1.
 
 // SetAllocatedResources checkpoints the resources allocated to a pod's containers
 func (m *manager) SetAllocatedResources(pod *v1.Pod) error {
+	klog.InfoS("SetAllocatedResources", "pod", klog.KObj(pod))
 	return m.allocated.SetPodResourceInfo(pod.UID, allocationFromPod(pod))
+}
+
+func (m *manager) GetAllocatedResources(podUID types.UID, containerName string) (v1.ResourceRequirements, bool) {
+	return m.allocated.GetContainerResources(podUID, containerName)
+}
+
+// SetAllocatedResources checkpoints the resources allocated to a pod's containers
+func (m *manager) SetAllocatedResourcesFromAllocateCpus(podUID types.UID, containerName string, request int64) error {
+	return m.allocated.SetContainerCPUResources(podUID, containerName, request)
 }
 
 func allocationFromPod(pod *v1.Pod) state.PodResourceInfo {
@@ -456,10 +472,10 @@ func allocationFromPod(pod *v1.Pod) state.PodResourceInfo {
 	}
 
 	for _, container := range pod.Spec.InitContainers {
-		if podutil.IsRestartableInitContainer(&container) {
+		//if podutil.IsRestartableInitContainer(&container) {
 			alloc := *container.Resources.DeepCopy()
 			podAlloc.ContainerResources[container.Name] = alloc
-		}
+		//}
 	}
 
 	return podAlloc
@@ -497,10 +513,12 @@ func (m *manager) AddPod(activePods []*v1.Pod, pod *v1.Pod) (bool, string, strin
 
 	// Check if we can admit the pod; if so, update the allocation.
 	allocatedPods := m.getAllocatedPods(activePods)
+	klog.InfoS("canAdmitPod", "pod", pod)
 	ok, reason, message := m.canAdmitPod(allocatedPods, pod)
 
 	if ok && utilfeature.DefaultFeatureGate.Enabled(features.InPlacePodVerticalScaling) {
 		// Checkpoint the resource values at which the Pod has been admitted or resized.
+		klog.InfoS("SetAllocatedResources", "pod", pod)
 		if err := m.SetAllocatedResources(pod); err != nil {
 			// TODO(vinaykul,InPlacePodVerticalScaling): Can we recover from this in some way? Investigate
 			klog.ErrorS(err, "SetPodAllocation failed", "pod", klog.KObj(pod))

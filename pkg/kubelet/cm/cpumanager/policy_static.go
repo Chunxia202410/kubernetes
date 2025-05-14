@@ -283,10 +283,11 @@ func (p *staticPolicy) GetAvailablePhysicalCPUs(s state.State) cpuset.CPUSet {
 	return s.GetDefaultCPUSet().Difference(p.reservedPhysicalCPUs)
 }
 
-func (p *staticPolicy) updateCPUsToReuse(pod *v1.Pod, container *v1.Container, cset cpuset.CPUSet) {
+func (p *staticPolicy) updateCPUsToReuse(s state.State, pod *v1.Pod, container *v1.Container, cset cpuset.CPUSet) {
 	// If pod entries to m.cpusToReuse other than the current pod exist, delete them.
-	for podUID := range p.cpusToReuse {
-		if podUID != string(pod.UID) {
+	for podUID, cpus := range p.cpusToReuse {
+		klog.InfoS("Static policy: updateCPUsToReuse", "podUID", podUID, "p.cpusToReuse[string(pod.UID)].Size()", p.cpusToReuse[string(pod.UID)].Size(), "cpus", cpus)
+		if cpus.Size() == 0 {
 			delete(p.cpusToReuse, podUID)
 		}
 	}
@@ -304,6 +305,9 @@ func (p *staticPolicy) updateCPUsToReuse(pod *v1.Pod, container *v1.Container, c
 				// regular containers.
 				break
 			}
+			klog.InfoS("Static policy: updateCPUsToReuse", "pod", klog.KObj(pod), "containerName", container.Name, "cset", cset)
+			cset = cset.Difference(p.inUseCPUsForNonRestartableInitContainer(s, pod, container))
+			klog.InfoS("Static policy: updateCPUsToReuse", "pod", klog.KObj(pod), "containerName", container.Name, "p.inUseCPUsForNonRestartableInitContainer(s, pod, container)", p.inUseCPUsForNonRestartableInitContainer(s, pod, container), "cset", cset)
 			p.cpusToReuse[string(pod.UID)] = p.cpusToReuse[string(pod.UID)].Union(cset)
 			return
 		}
@@ -311,6 +315,44 @@ func (p *staticPolicy) updateCPUsToReuse(pod *v1.Pod, container *v1.Container, c
 	// Otherwise it is an app container.
 	// Remove its cpuset from the cpuset of reusable CPUs for any new allocations.
 	p.cpusToReuse[string(pod.UID)] = p.cpusToReuse[string(pod.UID)].Difference(cset)
+	for podUID, cpus := range p.cpusToReuse {
+		klog.InfoS("Static policy: updateCPUsToReuse", "podUID", podUID, "cpus", cpus)
+	}
+}
+
+func (p *staticPolicy) ClearCPUsToReuse(pod *v1.Pod) {
+	if _, ok := p.cpusToReuse[string(pod.UID)]; ok {
+		delete(p.cpusToReuse, string(pod.UID))
+	}
+}
+
+func (p *staticPolicy) inUseCPUsForNonRestartableInitContainer(s state.State, pod *v1.Pod, container *v1.Container) cpuset.CPUSet {
+	var behindContainer = false
+	inUseCPUs := cpuset.New()
+
+	for _, initContainer := range pod.Spec.InitContainers {
+		if container.Name == initContainer.Name {
+			if podutil.IsRestartableInitContainer(&initContainer) {
+				// If the container is a restartable init container, we should not
+				// reuse its cpuset, as a restartable init container can run with
+				// regular containers.
+				break
+			} else {
+				behindContainer = true
+				continue
+			}
+		}
+		if behindContainer == true && podutil.IsRestartableInitContainer(&initContainer){
+			cset, _ := s.GetCPUSet(string(pod.UID), initContainer.Name)
+			inUseCPUs = inUseCPUs.Union(cset)
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		cset, _ := s.GetCPUSet(string(pod.UID), c.Name)
+		inUseCPUs = inUseCPUs.Union(cset)
+	}
+	
+	return inUseCPUs
 }
 
 func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Container) (rerr error) {
@@ -372,7 +414,7 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 		}
 	}
 	if cset, ok := s.GetCPUSet(string(pod.UID), container.Name); ok {
-		p.updateCPUsToReuse(pod, container, cset)
+		p.updateCPUsToReuse(s, pod, container, cset)
 		klog.InfoS("Static policy: container already present in state, skipping", "pod", klog.KObj(pod), "containerName", container.Name)
 		return nil
 	}
@@ -382,18 +424,30 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 	klog.InfoS("Topology Affinity", "pod", klog.KObj(pod), "containerName", container.Name, "affinity", hint)
 
 	// Allocate CPUs according to the NUMA affinity contained in the hint.
-	cpuAllocation, err := p.allocateCPUs(s, numCPUs, hint.NUMANodeAffinity, p.cpusToReuse[string(pod.UID)])
+	cpusToReuse := cpuset.New()
+	if podutil.IsInitContainer(&pod.Spec, container) && !podutil.IsRestartableInitContainer(container) {
+		inUseCPUs := p.inUseCPUsForNonRestartableInitContainer(s, pod, container)
+		cpusToReuse = p.cpusToReuse[string(pod.UID)].Union(inUseCPUs)
+		klog.V(4).InfoS("Allocated exclusive CPUs to non-restartable container", "pod", klog.KObj(pod), "containerName", container.Name, "inUseCPUs", inUseCPUs, "p.cpusToReuse[string(pod.UID)]", p.cpusToReuse[string(pod.UID)], "cpusToReuse", cpusToReuse)
+	} else {
+		cpusToReuse = p.cpusToReuse[string(pod.UID)]
+	}
+	cpuAllocation, err := p.allocateCPUs(s, numCPUs, hint.NUMANodeAffinity, cpusToReuse)
 	if err != nil {
 		klog.ErrorS(err, "Unable to allocate CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "numCPUs", numCPUs)
 		return err
 	}
 
 	s.SetCPUSet(string(pod.UID), container.Name, cpuAllocation.CPUs)
-	p.updateCPUsToReuse(pod, container, cpuAllocation.CPUs)
+	p.updateCPUsToReuse(s, pod, container, cpuAllocation.CPUs)
 	p.updateMetricsOnAllocate(s, cpuAllocation)
 
 	klog.V(4).InfoS("Allocated exclusive CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "cpuset", cpuAllocation.CPUs.String())
 	return nil
+}
+
+func (p *staticPolicy) GetReusableUnallocatedCPUs(pod *v1.Pod) cpuset.CPUSet {
+	return p.cpusToReuse[string(pod.UID)]
 }
 
 // getAssignedCPUsOfSiblings returns assigned cpus of given container's siblings(all containers other than the given container) in the given pod `podUID`.
