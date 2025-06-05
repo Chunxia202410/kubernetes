@@ -136,13 +136,17 @@ func (s *scope) RemoveContainer(containerID string) error {
 }
 
 func (s *scope) admitPolicyNone(pod *v1.Pod) lifecycle.PodAdmitResult {
+	var admitErr error
+	admitErr = nil
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		err := s.allocateAlignedResources(pod, &container)
 		if err != nil {
-			return admission.GetPodAdmitResult(err)
+			//return admission.GetPodAdmitResult(err)
+			admitErr = err
+			continue
 		}
 	}
-	return admission.GetPodAdmitResult(nil)
+	return admission.GetPodAdmitResult(admitErr)
 }
 
 // It would be better to implement this function in topologymanager instead of scope
