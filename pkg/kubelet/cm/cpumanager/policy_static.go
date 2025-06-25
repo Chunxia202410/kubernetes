@@ -294,9 +294,10 @@ func (p *staticPolicy) updateCPUsToReuse(pod *v1.Pod, container *v1.Container, c
 	if _, ok := p.cpusToReuse[string(pod.UID)]; !ok {
 		p.cpusToReuse[string(pod.UID)] = cpuset.New()
 	}
+	p.cpusToReuse[string(pod.UID)] = p.cpusToReuse[string(pod.UID)].Union(cset)
 	// Check if the container is an init container.
 	// If so, add its cpuset to the cpuset of reusable CPUs for any new allocations.
-	for _, initContainer := range pod.Spec.InitContainers {
+	/*for _, initContainer := range pod.Spec.InitContainers {
 		if container.Name == initContainer.Name {
 			if podutil.IsRestartableInitContainer(&initContainer) {
 				// If the container is a restartable init container, we should not
@@ -310,10 +311,17 @@ func (p *staticPolicy) updateCPUsToReuse(pod *v1.Pod, container *v1.Container, c
 	}
 	// Otherwise it is an app container.
 	// Remove its cpuset from the cpuset of reusable CPUs for any new allocations.
-	p.cpusToReuse[string(pod.UID)] = p.cpusToReuse[string(pod.UID)].Difference(cset)
+	p.cpusToReuse[string(pod.UID)] = p.cpusToReuse[string(pod.UID)].Difference(cset)*/
 }
 
 func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Container) (rerr error) {
+	if getTotalAssignedExclusiveCPUs(s) == 0 {
+		// first time to allocate CPU
+		maxCpuNum = GetMaxCpuNumber(pod)
+		cpuAllocation, err := p.allocateCPUs(s, numCPUs, hint.NUMANodeAffinity, cpuset.New())
+		p.updateCPUsToReuse(pod, container, cpuAllocation.CPUs)
+	}
+
 	numCPUs := p.guaranteedCPUs(pod, container)
 	if numCPUs == 0 {
 		// container belongs in the shared pool (nothing to do; use default cpuset)
@@ -372,7 +380,7 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 		}
 	}
 	if cset, ok := s.GetCPUSet(string(pod.UID), container.Name); ok {
-		p.updateCPUsToReuse(pod, container, cset)
+		//p.updateCPUsToReuse(pod, container, cset)
 		klog.InfoS("Static policy: container already present in state, skipping", "pod", klog.KObj(pod), "containerName", container.Name)
 		return nil
 	}
@@ -389,7 +397,7 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 	}
 
 	s.SetCPUSet(string(pod.UID), container.Name, cpuAllocation.CPUs)
-	p.updateCPUsToReuse(pod, container, cpuAllocation.CPUs)
+	//p.updateCPUsToReuse(pod, container, cpuAllocation.CPUs)
 	p.updateMetricsOnAllocate(s, cpuAllocation)
 
 	klog.V(4).InfoS("Allocated exclusive CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "cpuset", cpuAllocation.CPUs.String())
