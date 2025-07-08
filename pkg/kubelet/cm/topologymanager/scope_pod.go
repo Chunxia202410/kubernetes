@@ -66,6 +66,14 @@ func (s *podScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
 			return admission.GetPodAdmitResult(err)
 		}
 	}
+	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		err := s.allocateAlignedResourcesScaleUp(pod, &container)
+		if err != nil {
+			metrics.TopologyManagerAdmissionErrorsTotal.Inc()
+			return admission.GetPodAdmitResult(err)
+		}
+	}
+
 	if IsAlignmentGuaranteed(s.policy) {
 		// increment only if we know we allocate aligned resources.
 		klog.V(4).InfoS("Resource alignment at pod scope guaranteed", "pod", klog.KObj(pod))

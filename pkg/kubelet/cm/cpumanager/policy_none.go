@@ -66,6 +66,10 @@ func (p *nonePolicy) GetPodTopologyHints(s state.State, pod *v1.Pod) map[string]
 	return nil
 }
 
+func (p *nonePolicy) IsResourceScaleUp(s state.State, pod *v1.Pod, container *v1.Container) bool {
+	return false
+}
+
 // Assignable CPUs are the ones that can be exclusively allocated to pods that meet the exclusivity requirement
 // (ie guaranteed QoS class and integral CPU request).
 // Assignability of CPUs as a concept is only applicable in case of static policy i.e. scenarios where workloads

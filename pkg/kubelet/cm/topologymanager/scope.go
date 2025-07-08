@@ -142,6 +142,12 @@ func (s *scope) admitPolicyNone(pod *v1.Pod) lifecycle.PodAdmitResult {
 			return admission.GetPodAdmitResult(err)
 		}
 	}
+	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		err := s.allocateAlignedResourcesScaleUp(pod, &container)
+		if err != nil {
+			return admission.GetPodAdmitResult(err)
+		}
+	}
 	return admission.GetPodAdmitResult(nil)
 }
 
@@ -149,6 +155,22 @@ func (s *scope) admitPolicyNone(pod *v1.Pod) lifecycle.PodAdmitResult {
 // but topologymanager do not track providers anymore
 func (s *scope) allocateAlignedResources(pod *v1.Pod, container *v1.Container) error {
 	for _, provider := range s.hintProviders {
+		if provider.IsResourceScaleUp(pod, container) {
+			continue
+		}
+		err := provider.Allocate(pod, container)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *scope) allocateAlignedResourcesScaleUp(pod *v1.Pod, container *v1.Container) error {
+	for _, provider := range s.hintProviders {
+		if !provider.IsResourceScaleUp(pod, container) {
+			continue
+		}
 		err := provider.Allocate(pod, container)
 		if err != nil {
 			return err

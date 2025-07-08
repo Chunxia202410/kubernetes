@@ -56,6 +56,10 @@ func (m *fakeManager) RemoveContainer(containerID string) error {
 	return nil
 }
 
+func (m *fakeManager) IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool {
+	return false
+}
+
 func (m *fakeManager) GetTopologyHints(pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
 	klog.InfoS("Get container topology hints")
 	return map[string][]topologymanager.TopologyHint{}

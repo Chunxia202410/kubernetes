@@ -71,6 +71,10 @@ func (p *none) GetPodTopologyHints(_ context.Context, s state.State, pod *v1.Pod
 	return nil
 }
 
+func (p *none) IsResourceScaleUp(s state.State, pod *v1.Pod, container *v1.Container) bool {
+	return false
+}
+
 // GetAllocatableMemory returns the amount of allocatable memory for each NUMA node
 func (p *none) GetAllocatableMemory(_ context.Context, s state.State) []state.Block {
 	return []state.Block{}

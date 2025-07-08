@@ -27,6 +27,10 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
 )
 
+func (m *ManagerImpl) IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool {
+	return false
+}
+
 // GetTopologyHints implements the TopologyManager HintProvider Interface which
 // ensures the Device Manager is consulted when Topology Aware Hints for each
 // container are created.

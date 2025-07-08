@@ -42,4 +42,5 @@ type Policy interface {
 	GetPodTopologyHints(s state.State, pod *v1.Pod) map[string][]topologymanager.TopologyHint
 	// GetAllocatableCPUs returns the total set of CPUs available for allocation.
 	GetAllocatableCPUs(m state.State) cpuset.CPUSet
+	IsResourceScaleUp(s state.State, pod *v1.Pod, container *v1.Container) bool
 }

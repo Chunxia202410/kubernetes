@@ -469,6 +469,20 @@ func (p *staticPolicy) GetTopologyHints(ctx context.Context, s state.State, pod 
 	return p.calculateHints(s.GetMachineState(), pod, requestedResources)
 }
 
+func (p *staticPolicy) IsResourceScaleUp(s state.State, pod *v1.Pod, container *v1.Container) bool {
+	requestedResources, err := getRequestedResources(pod, container)
+	if err == nil {
+		containerBlocks := s.GetMemoryBlocks(string(pod.UID), container.Name)
+		// Short circuit to regenerate the same hints if there are already
+		// memory allocated for the container. This might happen after a
+		// kubelet restart, for example.
+		if containerBlocks != nil && len(containerBlocks) < len(requestedResources) {
+			return true
+		}
+	}
+	return false
+}
+
 func getRequestedResources(pod *v1.Pod, container *v1.Container) (map[v1.ResourceName]uint64, error) {
 	requestedResources := map[v1.ResourceName]uint64{}
 	resources := container.Resources.Requests

@@ -92,6 +92,7 @@ type Manager interface {
 
 	// Updates returns a channel that receives an Update when the device changed its status.
 	Updates() <-chan resourceupdates.Update
+	IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool
 }
 
 // DeviceRunContainerOptions contains the combined container runtime settings to consume its allocated devices.

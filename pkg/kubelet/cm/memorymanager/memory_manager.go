@@ -92,6 +92,8 @@ type Manager interface {
 
 	// GetMemory returns the memory allocated by a container from NUMA nodes
 	GetMemory(ctx context.Context, podUID, containerName string) []state.Block
+
+	IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool
 }
 
 type manager struct {
@@ -320,6 +322,10 @@ func (m *manager) GetTopologyHints(pod *v1.Pod, container *v1.Container) map[str
 	m.removeStaleState(klog.TODO())
 	// Delegate to active policy
 	return m.policy.GetTopologyHints(context.TODO(), m.state, pod, container)
+}
+
+func (m *manager) IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool {
+	return m.policy.IsResourceScaleUp(m.state, pod, container)
 }
 
 // TODO: move the method to the upper level, to re-use it under the CPU and memory managers

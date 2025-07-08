@@ -678,9 +678,10 @@ func returnTestCases() []testCase {
 type testCaseForResize struct {
 	name          string
 	pod           v1.Pod
-	container     v1.Container
+	container     []v1.Container
 	promised      state.ContainerCPUAssignments
 	assignments   state.ContainerCPUAssignments
+	cpusToReuse   map[string]cpuset.CPUSet
 	defaultCPUSet cpuset.CPUSet
 	expectedHints []topologymanager.TopologyHint
 	topology      *topology.CPUTopology
@@ -711,6 +712,7 @@ func TestGetTopologyHintsForResize(t *testing.T) {
 				policy: &staticPolicy{
 					topology: tc.topology,
 					options:  policyOpt,
+					cpusToReuse: tc.cpusToReuse,
 				},
 				state: &mockState{
 					promised:      tc.promised,
@@ -723,7 +725,7 @@ func TestGetTopologyHintsForResize(t *testing.T) {
 				sourcesReady:      &sourcesReadyStub{},
 			}
 
-			hints := m.GetTopologyHints(&tc.pod, &tc.container)[string(v1.ResourceCPU)]
+			hints := m.GetTopologyHints(&tc.pod, &tc.container[0])[string(v1.ResourceCPU)]
 			sort.SliceStable(hints, func(i, j int) bool {
 				return hints[i].LessThan(hints[j])
 			})
@@ -754,9 +756,11 @@ func returnTestCasesForResize() []testCaseForResize {
 
 	return []testCaseForResize{
 		{
-			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0,1",
+			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0,1, no reusableCPUs",
 			pod:           *testPod1,
-			container:     *testContainer1,
+			container:     []v1.Container{
+				*testContainer1,
+			},
 			promised: state.ContainerCPUAssignments{
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 6),
@@ -766,6 +770,9 @@ func returnTestCasesForResize() []testCaseForResize {
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 6, 3, 9),
 				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(),
 			},
 			defaultCPUSet: cpuset.New(1, 2, 4, 7, 8, 10),
 			expectedHints: []topologymanager.TopologyHint{
@@ -777,9 +784,11 @@ func returnTestCasesForResize() []testCaseForResize {
 			topology: topoDualSocketHT,
 		},
 		{
-			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0",
+			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0, no reusableCPUs",
 			pod:           *testPod1,
-			container:     *testContainer1,
+			container:     []v1.Container{
+				*testContainer1,
+			},
 			promised: state.ContainerCPUAssignments{
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 6),
@@ -789,6 +798,9 @@ func returnTestCasesForResize() []testCaseForResize {
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 6, 2, 8),
 				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(),
 			},
 			defaultCPUSet: cpuset.New(1, 3, 4, 7, 9, 10),
 			expectedHints: []topologymanager.TopologyHint{
@@ -804,20 +816,53 @@ func returnTestCasesForResize() []testCaseForResize {
 			topology: topoDualSocketHT,
 		},
 		{
-			name:          "Pod scale down, Request 4 CPUs, promised 2 on NUMA 0, assignments 6 on NUMA 0,1",
-			pod:           *testPod2,
-			container:     *testContainer2,
+			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0, reusableCPUs enough",
+			pod:           *testPod1,
+			container:     []v1.Container{
+				*testContainer1,
+			},
 			promised: state.ContainerCPUAssignments{
-				string(testPod2.UID): map[string]cpuset.CPUSet{
-					testContainer2.Name: cpuset.New(0, 6),
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1.Name: cpuset.New(0, 6),
 				},
 			},
 			assignments: state.ContainerCPUAssignments{
-				string(testPod2.UID): map[string]cpuset.CPUSet{
-					testContainer2.Name: cpuset.New(0, 5, 6, 3, 9, 11),
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1.Name: cpuset.New(0, 6, 2, 8),
 				},
 			},
-			defaultCPUSet: cpuset.New(1, 2, 4, 7, 8, 10),
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(3, 9),
+			},
+			defaultCPUSet: cpuset.New(1, 4, 7, 10),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketHT,
+		},
+		{
+			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0, reusableCPUs not enough",
+			pod:           *testPod1,
+			container:     []v1.Container{
+				*testContainer1,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1.Name: cpuset.New(0, 6),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1.Name: cpuset.New(0, 6, 2, 8),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(4),
+			},
+			defaultCPUSet: cpuset.New(1, 3, 7, 9, 10),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: m0001,
@@ -831,22 +876,57 @@ func returnTestCasesForResize() []testCaseForResize {
 			topology: topoDualSocketHT,
 		},
 		{
-			name:          "Pod scale down, Request 4 CPUs, no promised CPUs, assignments 6 on NUMA 0,1",
+			name:          "Pod scale down, Request 4 CPUs, promised 2 on NUMA 0, assignments 6 on NUMA 0,1",
 			pod:           *testPod2,
-			container:     *testContainer2,
+			container:     []v1.Container{
+				*testContainer2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod2.UID): map[string]cpuset.CPUSet{
+					testContainer2.Name: cpuset.New(0, 6),
+				},
+			},
 			assignments: state.ContainerCPUAssignments{
 				string(testPod2.UID): map[string]cpuset.CPUSet{
 					testContainer2.Name: cpuset.New(0, 5, 6, 3, 9, 11),
 				},
 			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod2.UID): cpuset.New(),
+			},
+			defaultCPUSet: cpuset.New(1, 2, 4, 7, 8, 10),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketHT,
+		},
+		/*{
+			name:          "Pod scale down, Request 4 CPUs, no promised CPUs, assignments 6 on NUMA 0,1",
+			pod:           *testPod2,
+			container:     []v1.Container{
+				*testContainer2,
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod2.UID): map[string]cpuset.CPUSet{
+					testContainer2.Name: cpuset.New(0, 5, 6, 3, 9, 11),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod2.UID): cpuset.New(),
+			},
 			defaultCPUSet: cpuset.New(1, 2, 4, 7, 8, 10),
 			expectedHints: []topologymanager.TopologyHint{},
 			topology: topoDualSocketHT,
-		},
+		},*/
 		{
-			name:          "Pod scale up, Request 21 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0, AlignBySocketOption is false",
+			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0, AlignBySocketOption is false",
 			pod:           *testPod1,
-			container:     *testContainer1,
+			container:     []v1.Container{
+				*testContainer1,
+			},
 			promised: state.ContainerCPUAssignments{
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 40),
@@ -856,6 +936,9 @@ func returnTestCasesForResize() []testCaseForResize {
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 1, 40, 41),
 				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(),
 			},
 			defaultCPUSet: cpuset.New(8, 9, 19, 29, 39),
 			expectedHints: []topologymanager.TopologyHint{
@@ -896,9 +979,11 @@ func returnTestCasesForResize() []testCaseForResize {
 			policyOptions: map[string]string{AlignBySocketOption: "false"},
 		},
 		{
-			name:          "Pod scale up, Request 21 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0, AlignBySocketOption is true",
+			name:          "Pod scale up, Request 6 CPUs, promised 2 on NUMA 0, assignments 4 on NUMA 0, AlignBySocketOption is true",
 			pod:           *testPod1,
-			container:     *testContainer1,
+			container:     []v1.Container{
+				*testContainer1,
+			},
 			promised: state.ContainerCPUAssignments{
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 40),
@@ -908,6 +993,9 @@ func returnTestCasesForResize() []testCaseForResize {
 				string(testPod1.UID): map[string]cpuset.CPUSet{
 					testContainer1.Name: cpuset.New(0, 1, 40, 41),
 				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(),
 			},
 			defaultCPUSet: cpuset.New(8, 9, 19, 29, 39),
 			expectedHints: []topologymanager.TopologyHint{
@@ -947,5 +1035,355 @@ func returnTestCasesForResize() []testCaseForResize {
 			topology: topoDualSocketMultiNumaPerSocketHT,
 			policyOptions: map[string]string{AlignBySocketOption: "true"},
 		},
+	}
+}
+
+/*type testMultiContainerCaseForResize struct {
+	name          string
+	pod           v1.Pod
+	container     []v1.Container
+	promised      state.ContainerCPUAssignments
+	assignments   state.ContainerCPUAssignments
+	cpusToReuse   map[string]cpuset.CPUSet
+	defaultCPUSet cpuset.CPUSet
+	expectedHints []topologymanager.TopologyHint
+	topology      *topology.CPUTopology
+	policyOptions map[string]string
+}*/
+
+func returnTestCasesForPodResize() []testCaseForResize {
+	testPod1 := makeMultiContainerPod(
+		[]struct{ request, limit string }{},
+		[]struct{ request, limit string }{{"6", "6"},{"6", "6"}})
+	testContainer1_1 := &testPod1.Spec.Containers[0]
+	testContainer1_2 := &testPod1.Spec.Containers[1]
+	testPod2 := makeMultiContainerPod(
+		[]struct{ request, limit string }{},
+		[]struct{ request, limit string }{{"2", "2"},{"2", "2"}})
+	testContainer2_1 := &testPod2.Spec.Containers[0]
+	testContainer2_2 := &testPod2.Spec.Containers[1]
+	testPod3 := makeMultiContainerPod(
+		[]struct{ request, limit string }{},
+		[]struct{ request, limit string }{{"3", "3"},{"2", "2"}})
+	testContainer3_1 := &testPod3.Spec.Containers[0]
+	testContainer3_2 := &testPod3.Spec.Containers[1]
+	testPod4 := makeMultiContainerPod(
+		[]struct{ request, limit string }{},
+		[]struct{ request, limit string }{{"3", "3"},{"3", "3"}})
+	testContainer4_1 := &testPod1.Spec.Containers[0]
+	testContainer4_2 := &testPod1.Spec.Containers[1]
+
+	m0001, _ := bitmask.NewBitMask(0)
+	m0011, _ := bitmask.NewBitMask(0, 1)
+	m0101, _ := bitmask.NewBitMask(0, 2)
+	//m1001, _ := bitmask.NewBitMask(0, 3)
+	m0111, _ := bitmask.NewBitMask(0, 1, 2)
+	m1011, _ := bitmask.NewBitMask(0, 1, 3)
+	m1101, _ := bitmask.NewBitMask(0, 2, 3)
+	m1111, _ := bitmask.NewBitMask(0, 1, 2, 3)
+
+	return []testCaseForResize{
+		{
+			name:          "All resized container of the Pod scale up, Request 6+6 CPUs, promised 2+2 on NUMA 0, assignments 4+4 on NUMA 0, reusableCPUs enough",
+			pod:           *testPod1,
+			container:     []v1.Container{
+				*testContainer1_1,
+				*testContainer1_2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0, 40),
+					testContainer1_2.Name: cpuset.New(2, 42),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0, 40, 1, 41),
+					testContainer1_2.Name: cpuset.New(2, 42, 3, 43),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(18, 19, 20, 21, 58, 59, 60, 61),
+			},
+			defaultCPUSet: cpuset.New(9, 49, 17, 57, 29, 69, 30, 70),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m0101,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1011,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1101,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m0111,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1111,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketMultiNumaPerSocketHT,
+		},
+		{
+			name:          "All resized container of the Pod scale up, Request 6+6 CPUs, promised 2+2 on NUMA 0, assignments 4+4 on NUMA 0, reusableCPUs not enough",
+			pod:           *testPod1,
+			container:     []v1.Container{
+				*testContainer1_1,
+				*testContainer1_2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0, 40),
+					testContainer1_2.Name: cpuset.New(2, 42),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0, 40, 1, 41),
+					testContainer1_2.Name: cpuset.New(2, 42, 3, 43),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(19, 20),
+			},
+			defaultCPUSet: cpuset.New(9, 49, 17, 57, 29, 69, 30, 70),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0111,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1111,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketMultiNumaPerSocketHT,
+		},
+		/*{
+			name:          "All resized container of the Pod scale up, Request 3+3 CPUs, promised 1+1 on NUMA 0, assignments 2+2 on NUMA 0, reusableCPUs enough",
+			pod:           *testPod1,
+			container:     []v1.Container{
+				*testContainer1_1,
+				*testContainer1_2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0),
+					testContainer1_2.Name: cpuset.New(6),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0, 2),
+					testContainer1_2.Name: cpuset.New(6, 8),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(3, 4),
+			},
+			defaultCPUSet: cpuset.New(1, 7, 9, 10),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketHT,
+		},
+		{
+			name:          "All resized container of the Pod scale up, Request 3+3 CPUs, promised 1+1 on NUMA 0, assignments 2+2 on NUMA 0, reusableCPUs not enough",
+			pod:           *testPod1,
+			container:     []v1.Container{
+				*testContainer1_1,
+				*testContainer1_2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0),
+					testContainer1_2.Name: cpuset.New(6),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod1.UID): map[string]cpuset.CPUSet{
+					testContainer1_1.Name: cpuset.New(0, 2),
+					testContainer1_2.Name: cpuset.New(6, 8),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod1.UID): cpuset.New(4),
+			},
+			defaultCPUSet: cpuset.New(1, 3, 7, 9, 10),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0001,
+					Preferred:        true,
+				},
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketHT,
+		},*/
+		{
+			name:          "All resized container of the Pod scale down, Request 2+2 CPUs, promised 1+1 on NUMA 0, assignments 3+3 on NUMA 0",
+			pod:           *testPod2,
+			container:     []v1.Container{
+				*testContainer2_1,
+				*testContainer2_2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod2.UID): map[string]cpuset.CPUSet{
+					testContainer2_1.Name: cpuset.New(0),
+					testContainer2_2.Name: cpuset.New(6),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod2.UID): map[string]cpuset.CPUSet{
+					testContainer2_1.Name: cpuset.New(0, 2, 3),
+					testContainer2_2.Name: cpuset.New(6, 8, 10),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod2.UID): cpuset.New(),
+			},
+			defaultCPUSet: cpuset.New(1, 4, 7, 9),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketHT,
+		},
+		{
+			name:          "no resized container, promised 1+1 on NUMA 0, assignments 3+3 on NUMA 0",
+			pod:           *testPod4,
+			container:     []v1.Container{
+				*testContainer4_1,
+				*testContainer4_2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod4.UID): map[string]cpuset.CPUSet{
+					testContainer4_1.Name: cpuset.New(0),
+					testContainer4_2.Name: cpuset.New(6),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod4.UID): map[string]cpuset.CPUSet{
+					testContainer4_1.Name: cpuset.New(0, 2, 3),
+					testContainer4_2.Name: cpuset.New(6, 8, 10),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod4.UID): cpuset.New(),
+			},
+			defaultCPUSet: cpuset.New(1, 4, 7, 9),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketHT,
+		},
+		{
+			name:          "one container scale up, one container scale down, Request 2+3 CPUs promised 1,1 on NUMA 0, assignments 3,2 on NUMA 0",
+			pod:           *testPod3,
+			container:     []v1.Container{
+				*testContainer3_1,
+				*testContainer3_2,
+			},
+			promised: state.ContainerCPUAssignments{
+				string(testPod3.UID): map[string]cpuset.CPUSet{
+					testContainer3_1.Name: cpuset.New(0),
+					testContainer3_2.Name: cpuset.New(6),
+				},
+			},
+			assignments: state.ContainerCPUAssignments{
+				string(testPod3.UID): map[string]cpuset.CPUSet{
+					testContainer3_1.Name: cpuset.New(0, 2),
+					testContainer3_2.Name: cpuset.New(6, 8, 10),
+				},
+			},
+			cpusToReuse: map[string]cpuset.CPUSet{
+				string(testPod3.UID): cpuset.New(),
+			},
+			defaultCPUSet: cpuset.New(1, 3, 4, 7, 9),
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0001,
+					Preferred:        true,
+				},
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+			},
+			topology: topoDualSocketHT,
+		},
+	}
+}
+
+func TestGetPodTopologyHintsForResize(t *testing.T) {
+	tcases := returnTestCasesForResize()
+	//tcases := returnTestCasesForPodResize()
+	tcases = append(tcases, returnTestCasesForPodResize()...)
+
+	for _, tc := range tcases {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, pkgfeatures.InPlacePodVerticalScalingExclusiveCPUs, true)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, pkgfeatures.CPUManagerPolicyAlphaOptions, true)
+			policyOpt, _ := NewStaticPolicyOptions(tc.policyOptions)
+			var activePods []*v1.Pod
+			for p := range tc.assignments {
+				pod := v1.Pod{}
+				pod.UID = types.UID(p)
+				for c := range tc.assignments[p] {
+					container := v1.Container{}
+					container.Name = c
+					pod.Spec.Containers = append(pod.Spec.Containers, container)
+				}
+				activePods = append(activePods, &pod)
+			}
+
+			m := manager{
+				policy: &staticPolicy{
+					topology: tc.topology,
+					options:  policyOpt,
+					cpusToReuse: tc.cpusToReuse,
+				},
+				state: &mockState{
+					promised:      tc.promised,
+					assignments:   tc.assignments,
+					defaultCPUSet: tc.defaultCPUSet,
+				},
+				topology:          tc.topology,
+				activePods:        func() []*v1.Pod { return activePods },
+				podStatusProvider: mockPodStatusProvider{},
+				sourcesReady:      &sourcesReadyStub{},
+			}
+
+			hints := m.GetPodTopologyHints(&tc.pod)[string(v1.ResourceCPU)]
+			sort.SliceStable(hints, func(i, j int) bool {
+				return hints[i].LessThan(hints[j])
+			})
+			sort.SliceStable(tc.expectedHints, func(i, j int) bool {
+				return tc.expectedHints[i].LessThan(tc.expectedHints[j])
+			})
+			if !reflect.DeepEqual(tc.expectedHints, hints) {
+				t.Errorf("Expected in result to be %v , got %v", tc.expectedHints, hints)
+			}
+		})
 	}
 }

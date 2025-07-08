@@ -97,6 +97,8 @@ type Manager interface {
 	// GetAllCPUs returns all the CPUs known by cpumanager, as reported by the
 	// hardware discovery. Maps to the CPU capacity.
 	GetAllCPUs() cpuset.CPUSet
+
+	IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool
 }
 
 type manager struct {
@@ -335,6 +337,10 @@ func (m *manager) GetPodTopologyHints(pod *v1.Pod) map[string][]topologymanager.
 	m.removeStaleState()
 	// Delegate to active policy
 	return m.policy.GetPodTopologyHints(m.state, pod)
+}
+
+func (m *manager) IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool {
+	return m.policy.IsResourceScaleUp(m.state, pod, container)
 }
 
 func (m *manager) GetAllocatableCPUs() cpuset.CPUSet {

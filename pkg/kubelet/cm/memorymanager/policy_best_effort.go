@@ -80,3 +80,7 @@ func (p *bestEffortPolicy) GetTopologyHints(ctx context.Context, s state.State, 
 func (p *bestEffortPolicy) GetAllocatableMemory(ctx context.Context, s state.State) []state.Block {
 	return p.static.GetAllocatableMemory(ctx, s)
 }
+
+func (p *bestEffortPolicy) IsResourceScaleUp(s state.State, pod *v1.Pod, container *v1.Container) bool {
+	return p.static.IsResourceScaleUp(s, pod, container)
+}

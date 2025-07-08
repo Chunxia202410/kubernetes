@@ -45,6 +45,8 @@ func NewContainerScope(policy Policy) Scope {
 }
 
 func (s *containerScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
+	// Container topology hints generation. 
+	// CPU, memory scale down, or CPU, memory not changed, or CPU, memory, device first allocated when Pod create.
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
 		bestHint, admit := s.calculateAffinity(pod, &container)
 		klog.InfoS("Best TopologyHint", "bestHint", bestHint, "pod", klog.KObj(pod), "containerName", container.Name)
@@ -68,6 +70,14 @@ func (s *containerScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
 		if IsAlignmentGuaranteed(s.policy) {
 			klog.V(4).InfoS("Resource alignment at container scope guaranteed", "pod", klog.KObj(pod))
 			metrics.ContainerAlignedComputeResources.WithLabelValues(metrics.AlignScopeContainer, metrics.AlignedNUMANode).Inc()
+		}
+	}
+	// CPU, memory scale up
+	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		err := s.allocateAlignedResourcesScaleUp(pod, &container)
+		if err != nil {
+			metrics.TopologyManagerAdmissionErrorsTotal.Inc()
+			return admission.GetPodAdmitResult(err)
 		}
 	}
 	return admission.GetPodAdmitResult(nil)

@@ -92,6 +92,7 @@ type HintProvider interface {
 	// all hints have been gathered and the aggregated Hint is available via a
 	// call to Store.GetAffinity().
 	Allocate(pod *v1.Pod, container *v1.Container) error
+	IsResourceScaleUp(pod *v1.Pod, container *v1.Container) bool
 }
 
 // Store interface is to allow Hint Providers to retrieve pod affinity
