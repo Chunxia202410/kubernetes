@@ -2568,6 +2568,9 @@ type ResourceRequirements struct {
 	// +featureGate=DynamicResourceAllocation
 	// +optional
 	Claims []ResourceClaim
+	// MustKeepCPUs describes the Keep resource for the container.
+	// +optional
+	MustKeepCPUs string
 }
 
 // VolumeResourceRequirements describes the storage resource requirements for a volume.

@@ -2838,6 +2838,9 @@ type ResourceRequirements struct {
 	// +featureGate=DynamicResourceAllocation
 	// +optional
 	Claims []ResourceClaim `json:"claims,omitempty" protobuf:"bytes,3,opt,name=claims"`
+	// MustKeepCPUs describes the Keep resource for the container.
+	// +optional
+	MustKeepCPUs string `json:"mustKeepCPUs,omitempty" protobuf:"bytes,4,opt,name=mustKeepCPUs"`
 }
 
 // VolumeResourceRequirements describes the storage resource requirements for a volume.
