@@ -131,6 +131,21 @@ func (e getPromisedCPUSetError) Type() string {
 	return types.ErrorGetPromisedCPUSet
 }
 
+// CPUGroup represents a single group of CPUs allocated during a scaling event.
+type CPUGroup struct {
+	CPUSet cpuset.CPUSet
+}
+
+// ContainerCPUGroups manages all CPU groups for a specific container.
+type ContainerCPUGroups struct {
+	Groups []CPUGroup // Ordered list of CPU groups, newest are appended.
+}
+
+// PodCPUGroups manages CPU groups for all containers within a single pod.
+type PodCPUGroups struct {
+	Containers map[string]*ContainerCPUGroups // Key: container name
+}
+
 // staticPolicy is a CPU manager policy that does not change CPU
 // assignments for exclusively pinned guaranteed containers after the main
 // container process starts.
@@ -191,6 +206,8 @@ type staticPolicy struct {
 	// we compute this value multiple time, and it's not supposed to change
 	// at runtime - the cpumanager can't deal with runtime topology changes anyway.
 	cpuGroupSize int
+	// podCPUGroups manages CPU groups for all pods for reverse order scaling.
+	podCPUGroups map[string]*PodCPUGroups // Key: pod UID
 }
 
 // Ensure staticPolicy implements Policy interface
@@ -219,6 +236,7 @@ func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reserv
 		options:                 opts,
 		cpuGroupSize:            cpuGroupSize,
 		cpusToReuseDuringResize: make(map[string]cpuset.CPUSet),
+		podCPUGroups:            make(map[string]*PodCPUGroups),
 	}
 
 	allCPUs := topology.CPUDetails.CPUs()
@@ -476,10 +494,33 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 					ContainerName: container.Name,
 				}
 			}
+
+			if numCPUs <= cpusInUseByPodContainer.Size() {
+				// 1. Calculate the desired CPUs to keep using KeepFirstCPUGroups.
+				CPUsToKeep, _ := p.KeepFirstCPUGroups(string(pod.UID), container.Name, numCPUs)
+
+				// 2. Check if the desired set is valid and contains the mustKeepCPUsForResize.
+				if !CPUsToKeep.IsEmpty() && CPUsToKeep.Size() <= numCPUs && mustKeepCPUsForResize.IsSubsetOf(CPUsToKeep) {
+					klog.InfoS("Scale down: Adjusting mustKeepCPUsForResize based on KeepFirstCPUGroups", "pod", klog.KObj(pod), "containerName", container.Name, "originalMustKeep", mustKeepCPUsForResize.String(), "newMustKeep", CPUsToKeep.String())
+					// Replace mustKeepCPUsForResize with the calculated set.
+					mustKeepCPUsForResize = CPUsToKeep.Clone()
+				} 
+			}
 			newallocatedcpuset, err := p.allocateCPUs(s, numCPUs, hint.NUMANodeAffinity, p.cpusToReuse[string(pod.UID)], &cpusInUseByPodContainer, &mustKeepCPUsForResize)
 			if err != nil {
 				klog.ErrorS(err, "Static policy: Unable to allocate new CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "numCPUs", numCPUs)
 				return err
+			}
+
+			addedCPUs := cpuset.New()
+			if numCPUs <= cpusInUseByPodContainer.Size() {
+				addedCPUs = newallocatedcpuset.CPUs.Difference(mustKeepCPUsForResize)
+			} else {
+				addedCPUs = newallocatedcpuset.CPUs.Difference(cpusInUseByPodContainer)
+			}
+
+			if !addedCPUs.IsEmpty() {
+				p.AddCPUGroup(string(pod.UID), container.Name, addedCPUs)
 			}
 
 			// Allocation successful, update the current state
@@ -511,7 +552,8 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 		klog.ErrorS(err, "Unable to allocate CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "numCPUs", numCPUs)
 		return err
 	}
-
+	
+	p.AddCPUGroup(string(pod.UID), container.Name, cpuAllocation.CPUs)
 	s.SetCPUSet(string(pod.UID), container.Name, cpuAllocation.CPUs)
 	s.SetPromisedCPUSet(string(pod.UID), container.Name, cpuAllocation.CPUs)
 	p.updateCPUsToReuse(pod, container, cpuAllocation.CPUs)
@@ -519,6 +561,71 @@ func (p *staticPolicy) Allocate(s state.State, pod *v1.Pod, container *v1.Contai
 
 	klog.V(4).InfoS("Allocated exclusive CPUs", "pod", klog.KObj(pod), "containerName", container.Name, "cpuset", cpuAllocation.CPUs.String())
 	return nil
+}
+
+// AddCPUGroup adds a new CPU group for the specified pod and container.
+func (p *staticPolicy) AddCPUGroup(podUID string, containerName string, cpuset cpuset.CPUSet) {
+	if _, exists := p.podCPUGroups[podUID]; !exists {
+		p.podCPUGroups[podUID] = &PodCPUGroups{
+			Containers: make(map[string]*ContainerCPUGroups),
+		}
+	}
+	if _, exists := p.podCPUGroups[podUID].Containers[containerName]; !exists {
+		p.podCPUGroups[podUID].Containers[containerName] = &ContainerCPUGroups{
+			Groups: []CPUGroup{},
+		}
+	}
+	klog.InfoS("Adding CPU group", "podUID", podUID, "containerName", containerName, "cpuset", cpuset.String())
+	p.podCPUGroups[podUID].Containers[containerName].Groups = append(p.podCPUGroups[podUID].Containers[containerName].Groups, CPUGroup{CPUSet: cpuset})
+
+	// Loop to print the container's CPUGroups for debugging
+	if pPodGroups, ok := p.podCPUGroups[podUID]; ok {
+		if pContainerGroups, cOk := pPodGroups.Containers[containerName]; cOk {
+			klog.InfoS("container CPUGroups detail", "podUID", podUID, "containerName", containerName, "numGroups", len(pContainerGroups.Groups))
+			for i, group := range pContainerGroups.Groups {
+				klog.InfoS("container CPUGroups detail", "podUID", podUID, "containerName", containerName, "groupIndex", i, "cpuset", group.CPUSet.String())
+			}
+		} else {
+			klog.InfoS("container CPUGroups detail: container not found after add", "podUID", podUID, "containerName", containerName)
+		}
+	} else {
+		klog.InfoS("container CPUGroups detail: pod not found after add", "podUID", podUID, "containerName", containerName)
+	}
+}
+
+// KeepFirstCPUGroups2 calculates two CPU sets by summing up CPU groups from the oldest.
+// It returns the CPUSet of groups that fit within numCPUs, and the CPUSet that includes
+// the next group as well. It also modifies the podCPUGroups to remove trailing groups.
+func (p *staticPolicy) KeepFirstCPUGroups(podUID string, containerName string, numCPUs int) (cpuset.CPUSet, cpuset.CPUSet) {
+	firstSet, secondSet := cpuset.New(), cpuset.New()
+	containerGroups, ok := p.podCPUGroups[podUID].Containers[containerName]
+	if !ok || len(containerGroups.Groups) == 0 {
+		return firstSet, secondSet
+	}
+
+	total := 0
+	for i, group := range containerGroups.Groups {
+		groupSize := group.CPUSet.Size()
+		if total+groupSize <= numCPUs {
+			firstSet = firstSet.Union(group.CPUSet)
+			total += groupSize
+		} else {
+			// This group cannot be fully included. It's the "next" group for secondSet.
+			secondSet = firstSet.Union(group.CPUSet)
+			// We break here because we've found the cutoff.
+			// The groups to keep are from 0 to lastKeptIndex.
+			// The podCPUGroups will be truncated to i (which is lastKeptIndex + 1, so we use i)
+			klog.InfoS("KeepFirstCPUGroups result (truncated)", "podUID", podUID, "containerName", containerName, "numCPUs", numCPUs, "firstSet", firstSet.String(), "secondSet", secondSet.String())
+			p.podCPUGroups[podUID].Containers[containerName].Groups = containerGroups.Groups[:i]
+			return firstSet, secondSet
+		}
+	}
+
+	// If the loop completes, it means all groups were kept.
+	// secondSet should be the same as firstSet.
+	secondSet = firstSet.Clone()
+	klog.InfoS("KeepFirstCPUGroups result (all groups kept)", "podUID", podUID, "containerName", containerName, "numCPUs", numCPUs, "firstSet", firstSet.String(), "secondSet", secondSet.String())
+	return firstSet, secondSet
 }
 
 // getAssignedCPUsOfSiblings returns assigned cpus of given container's siblings(all containers other than the given container) in the given pod `podUID`.
