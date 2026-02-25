@@ -447,6 +447,7 @@ func (m *manager) isAllInitContainerTerminated(rootLogger logr.Logger, pod *v1.P
 
 // If there are leaked CPUs of a Pod, release them and reallocate CPUs for the InitContainer which assigned leaked CPUs.
 func (m *manager) releasePodUnallocatedCPUs(rootLogger logr.Logger) {
+	// Loop
 	for _, pod := range m.activePods() {
 		if !m.isAllInitContainerTerminated(rootLogger, pod) {
 			continue
