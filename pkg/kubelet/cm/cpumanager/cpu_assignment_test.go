@@ -1211,10 +1211,10 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			cpuset.New(39),
 			40,
 			"",
-			mustParseCPUSet(t, "0-9,20-29,39-48,60-69"),
+			mustParseCPUSet(t, "0-8,20-30,39-48,60-69"),
 		},
 		{
-			"Allocated 1 CPU, take NUMA nodes of cpus from dual socket with multi-numa-per-socket with HT, the NUMA node with allocated CPUs already taken more CPUs",
+			"Take NUMA nodes of cpus from dual socket with multi-numa-per-socket with HT, the NUMA node with allocated CPUs already taken more CPUs",
 			topoDualSocketMultiNumaPerSocketHT,
 			StaticPolicyOptions{},
 			mustParseCPUSet(t, "9,30-38,49"),
@@ -1313,6 +1313,16 @@ func commonTakeByTopologyTestCasesForResize(t *testing.T) []takeByTopologyTestCa
 			"",
 			mustParseCPUSet(t, "3,4,11,12,15,16,23,60"),
 		},
+		{
+			"Allocated 2 CPUs, take cpus from best available UncoreCache group of multi uncore cache single socket - SMT enabled",
+			topoUncoreSingleSocketNoSMT,
+			StaticPolicyOptions{PreferAlignByUncoreCacheOption: true},
+			mustParseCPUSet(t, "2-3,10-11,4-7,12-15"),
+			cpuset.New(8, 9),
+			8,
+			"",
+			cpuset.New(4, 5, 6, 7, 8, 9, 10, 11),
+		},
 	}
 }
 
@@ -1328,6 +1338,10 @@ func TestTakeByTopologyNUMAPackedForResize(t *testing.T) {
 			}
 
 			result, err := takeByTopologyNUMAPacked(logger, tc.topo, tc.availableCPUs, tc.numCPUs, strategy, tc.opts.PreferAlignByUncoreCacheOption, &tc.reusableCPUs, nil)
+
+			if err != nil {
+				t.Errorf("expected error to be [%v] but it was [%v]", tc.expErr, err)
+			}
 
 			if tc.expErr != "" && err != nil && err.Error() != tc.expErr {
 				t.Errorf("expected error to be [%v] but it was [%v]", tc.expErr, err)
