@@ -287,8 +287,6 @@ func (m *manager) Allocate(ctx context.Context, p *v1.Pod, c *v1.Container, oper
 }
 
 func (m *manager) AllocatePod(logger logr.Logger, pod *v1.Pod, operation lifecycle.Operation) error {
-	logger := klog.TODO() // until we move topology manager to contextual logging
-
 	// Garbage collect any stranded resources before allocating CPUs.
 	m.removeStaleState(logger)
 
@@ -429,7 +427,6 @@ func (m *manager) removeStaleState(rootLogger logr.Logger) {
 			}
 		}
 	}
-
 	m.containerMap.Visit(func(podUID, containerName, containerID string) {
 		logger := klog.LoggerWithValues(rootLogger, "podUID", podUID, "containerName", containerName)
 		if _, ok := activeContainers[podUID][containerName]; ok {
