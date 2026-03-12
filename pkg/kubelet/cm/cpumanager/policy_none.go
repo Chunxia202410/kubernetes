@@ -60,11 +60,11 @@ func (p *nonePolicy) RemoveContainer(_ logr.Logger, s state.State, podUID string
 	return nil
 }
 
-func (p *nonePolicy) GetTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
+func (p *nonePolicy) GetTopologyHints(logger logr.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	return nil
 }
 
-func (p *nonePolicy) GetPodTopologyHints(_ logr.Logger, s state.State, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
+func (p *nonePolicy) GetPodTopologyHints(logger logr.Logger, s state.State, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	return nil
 }
 

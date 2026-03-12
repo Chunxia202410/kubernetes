@@ -393,6 +393,10 @@ func (m *ManagerImpl) Stop(logger klog.Logger) error {
 // Allocate is the call that you can use to allocate a set of devices
 // from the registered device plugins.
 func (m *ManagerImpl) Allocate(ctx context.Context, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) error {
+	if operation != lifecycle.AddOperation {
+		// Device Manager support only add resource allocation operation.
+		return nil
+	}
 	if _, ok := m.devicesToReuse[string(pod.UID)]; !ok {
 		m.devicesToReuse[string(pod.UID)] = make(map[string]sets.Set[string])
 	}

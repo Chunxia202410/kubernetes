@@ -49,7 +49,7 @@ func TestNonePolicyAllocate(t *testing.T) {
 	container := &testPod.Spec.Containers[0]
 	err := policy.Allocate(logger, st, testPod, container, lifecycle.AddOperation)
 	if err != nil {
-		t.Errorf("NonePolicy Allocate() error. expected no error but got: %v", err)
+		t.Errorf("NonePolicy Allocate(lifecycle.AddOperation) error. expected no error but got: %v", err)
 	}
 }
 

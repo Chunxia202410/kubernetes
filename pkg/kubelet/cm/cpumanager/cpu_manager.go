@@ -287,8 +287,6 @@ func (m *manager) Allocate(ctx context.Context, p *v1.Pod, c *v1.Container, oper
 }
 
 func (m *manager) AllocatePod(logger klog.Logger, pod *v1.Pod, operation lifecycle.Operation) error {
-	logger := klog.TODO() // until we move topology manager to contextual logging
-
 	// Garbage collect any stranded resources before allocating CPUs.
 	m.removeStaleState(logger)
 

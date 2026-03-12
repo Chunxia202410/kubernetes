@@ -182,6 +182,10 @@ func (p *staticPolicy) validatePodScopeResources(logger klog.Logger, pod *v1.Pod
 // The logic here allocates a single NUMA-aligned "bubble" of memory for the
 // entire pod. All containers within the pod will share this NUMA binding.
 func (p *staticPolicy) AllocatePod(logger klog.Logger, s state.State, pod *v1.Pod, operation lifecycle.Operation) (rerr error) {
+	// Memory manager support only Add Operation
+	if operation != lifecycle.AddOperation {
+		return nil
+	}
 	podUID := string(pod.UID)
 	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod))
 	logger.V(4).Info("AllocatePod called for pod-level managed pod")
@@ -423,6 +427,10 @@ func memoryBlocksToString(blocks []state.Block) string {
 
 // Allocate call is idempotent
 func (p *staticPolicy) Allocate(ctx context.Context, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) (rerr error) {
+	// Memory manager support only Add Operation
+	if operation != lifecycle.AddOperation {
+		return nil
+	}
 	// allocate the memory only for guaranteed pods
 	logger := klog.LoggerWithValues(klog.FromContext(ctx), "pod", klog.KObj(pod), "containerName", container.Name)
 
@@ -773,6 +781,11 @@ func getPodRequestedResources(logger klog.Logger, pod *v1.Pod) (map[v1.ResourceN
 }
 
 func (p *staticPolicy) GetPodTopologyHints(logger klog.Logger, s state.State, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
+	// Memory manager support only Add Operation
+	if operation != lifecycle.AddOperation {
+		return nil
+	}
+
 	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod))
 
 	if v1qos.GetPodQOS(pod) != v1.PodQOSGuaranteed {
@@ -831,6 +844,11 @@ func (p *staticPolicy) GetPodTopologyHints(logger klog.Logger, s state.State, po
 // and is consulted to achieve NUMA aware resource alignment among this
 // and other resource controllers.
 func (p *staticPolicy) GetTopologyHints(logger klog.Logger, s state.State, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
+	// Memory manager support only Add Operation
+	if operation != lifecycle.AddOperation {
+		return nil
+	}
+
 	logger = klog.LoggerWithValues(logger, "pod", klog.KObj(pod))
 
 	if v1qos.GetPodQOS(pod) != v1.PodQOSGuaranteed {

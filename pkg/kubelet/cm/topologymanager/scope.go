@@ -138,7 +138,7 @@ func (s *scope) RemoveContainer(logger klog.Logger, containerID string) error {
 
 func (s *scope) admitPolicyNone(ctx context.Context, pod *v1.Pod, operation lifecycle.Operation) lifecycle.PodAdmitResult {
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
-		err := s.allocateAlignedResources(pod, &container, operation)
+		err := s.allocateAlignedResources(ctx, pod, &container, operation)
 		if err != nil {
 			return admission.GetPodAdmitResult(err)
 		}
@@ -147,7 +147,7 @@ func (s *scope) admitPolicyNone(ctx context.Context, pod *v1.Pod, operation life
 }
 
 // It would be better to implement this function in topologymanager instead of scope
-// but topologymanager do not track providers anymore
+// but topologymanager does not track providers anymore
 func (s *scope) allocateAlignedResources(ctx context.Context, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) error {
 	for _, provider := range s.hintProviders {
 		err := provider.Allocate(ctx, pod, container, operation)
