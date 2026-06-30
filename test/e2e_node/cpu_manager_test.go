@@ -37,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	helpers "k8s.io/component-helpers/resource"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/features"
@@ -3424,6 +3425,7 @@ var _ = SIGDescribe("CPU Manager with InPlacePodVerticalScalingExclusiveCPUs dis
 				),
 			)
 		})
+
 	},
 )
 
@@ -7419,6 +7421,144 @@ var _ = SIGDescribe("CPU Manager with InPlacePodVerticalScalingExclusiveCPUs ena
 				),
 			)
 		})
+
+		ginkgo.When("Feature-gate toggle test", ginkgo.Label("scale-delay-time-toggle"), func() {
+			ginkgo.BeforeEach(func(ctx context.Context) {
+				reservedCPUs = cpuset.New(0)
+			})
+			ginkgo.DescribeTable("",
+				func(ctx context.Context,
+					testCasePod1 podResizeWithScaleDelayTimeTestCase,
+					testCasePod2 podResizeWithScaleDelayTimeTestCase,
+				) {
+					expectedCPUCount := 0
+					for ctx := range testCasePod1.firstPatch.expectedCPUInfo {
+						expectedCPUCount += testCasePod1.firstPatch.expectedCPUInfo[ctx].cpuCount
+					}
+					skipIfAllocatableCPUsLessThan(getLocalNode(ctx, f), expectedCPUCount)
+
+					expectedCPUCount = 0
+					for ctx := range testCasePod1.secondPatch.expectedCPUInfo {
+						expectedCPUCount += testCasePod1.secondPatch.expectedCPUInfo[ctx].cpuCount
+					}
+					for ctx := range testCasePod2.firstPatch.expectedCPUInfo {
+						expectedCPUCount += testCasePod2.firstPatch.expectedCPUInfo[ctx].cpuCount
+					}
+					skipIfAllocatableCPUsLessThan(getLocalNode(ctx, f), expectedCPUCount)
+
+					delayStr := fmt.Sprintf("%ds", testCasePod1.scaleDelayTime)
+
+					updateKubeletConfigIfNeeded(ctx, f, configureCPUManagerInKubelet(oldCfg, &cpuManagerKubeletArguments{
+						policyName:         string(cpumanager.PolicyStatic),
+						reservedSystemCPUs: reservedCPUs, // Not really needed for the tests but helps to make a more precise check
+						enableInPlacePodVerticalScalingExclusiveCPUs: true,
+						enableCPUManagerOptions:                      true,
+						options: map[string]string{
+							cpumanager.ScaleDelayTimeOption: delayStr,
+						},
+					}))
+					// Pod1 create
+					gateName := features.DownwardAPIAssignedResources
+					cleanup := withFeatureGate(gateName, true)
+					defer cleanup()
+					fmt.Println("Verify Feature gate DownwardAPIAssignedResources is on : ", utilfeature.DefaultFeatureGate.Enabled(gateName))
+					// fmt.Println("Sleeping for 60 seconds")
+					time.Sleep(60 * time.Second)
+
+					tStamp := strconv.Itoa(time.Now().Nanosecond())
+					testPod1 := podresize.MakeResizablePodWithDownwardAPI(f.Namespace.Name, "testpod1", tStamp, testCasePod1.podCreate.originalContainers, nil)
+					testPod1 = e2epod.MustMixinRestrictedPodSecurity(testPod1)
+					newPods1, podClient1 := createAndVerifyPod(ctx, f, testPod1, testCasePod1.podCreate.originalContainers, testCasePod1.podCreate.originalCPUInfo)
+					fmt.Println("------------------------------ Check New Pod Spec -----------------------------------------------------")
+					fmt.Println(newPods1[0].Spec)
+
+					_ = newPods1
+					_ = podClient1
+					// Intentionally fail so we can see all the logs above
+					gomega.Expect(false).To(gomega.BeTrue(), "DIAGNOSTIC: intentional failure to force log output - check DIAGNOSTIC SUMMARY above")
+				},
+				ginkgo.Entry("decrease CPU (gu-container-1) request and limit with scale down delay 0s",
+					// Pod1 configure
+					podResizeWithScaleDelayTimeTestCase{
+						podCreate: podCreateOperation{
+							originalContainers: []podresize.ResizableContainerInfo{
+								{
+									Name:      "gu-container-1",
+									Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "200Mi", MemLim: "200Mi"},
+								},
+							},
+							originalCPUInfo: []containerCPUInfo{
+								{
+									Name:     "gu-container-1",
+									cpuCount: 2,
+								},
+							},
+						},
+						firstPatch: podPatchOperation{
+							desiredContainers: []podresize.ResizableContainerInfo{
+								{
+									Name:      "gu-container-1",
+									Resources: &cgroups.ContainerResources{CPUReq: "4000m", CPULim: "4000m", MemReq: "200Mi", MemLim: "200Mi"},
+								},
+							},
+							expectedContainers: []podresize.ResizableContainerInfo{
+								{
+									Name:      "gu-container-1",
+									Resources: &cgroups.ContainerResources{CPUReq: "4000m", CPULim: "4000m", MemReq: "200Mi", MemLim: "200Mi"},
+								},
+							},
+							expectedCPUInfo: []containerCPUInfo{
+								{
+									Name:     "gu-container-1",
+									cpuCount: 4,
+								},
+							},
+						},
+						secondPatch: podPatchOperation{
+							desiredContainers: []podresize.ResizableContainerInfo{
+								{
+									Name:      "gu-container-1",
+									Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "200Mi", MemLim: "200Mi"},
+								},
+							},
+							expectedContainers: []podresize.ResizableContainerInfo{
+								{
+									Name:      "gu-container-1",
+									Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "200Mi", MemLim: "200Mi"},
+								},
+							},
+							expectedCPUInfo: []containerCPUInfo{
+								{
+									Name:     "gu-container-1",
+									cpuCount: 2,
+								},
+							},
+						},
+						scaleDelayTime:     10,
+						kubeletRestartTest: false,
+						rapidScaleTest:     false,
+					},
+					// Pod2 configure
+					podResizeWithScaleDelayTimeTestCase{
+						podCreate: podCreateOperation{
+							originalContainers: []podresize.ResizableContainerInfo{
+								{
+									Name:      "gu-container-1",
+									Resources: &cgroups.ContainerResources{CPUReq: "2000m", CPULim: "2000m", MemReq: "200Mi", MemLim: "200Mi"},
+								},
+							},
+							originalCPUInfo: []containerCPUInfo{
+								{
+									Name:     "gu-container-1",
+									cpuCount: 2,
+								},
+							},
+						},
+					},
+				),
+			)
+		})
+
 	},
 )
 
