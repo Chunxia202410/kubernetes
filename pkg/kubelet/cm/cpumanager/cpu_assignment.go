@@ -1619,6 +1619,7 @@ func takeByTopologyNUMADistributedForResize(logger logr.Logger, topo *topology.C
 		var bestBalance = math.MaxFloat64
 		var bestRemainder []int = nil
 		var bestCombo []int = nil
+		var allocatedReminderNuma int = 0
 		acc.iterateCombinations(numas, k, func(combo []int) LoopControl {
 			// If we've already found a combo with a balance of 0 in a
 			// different iteration, then don't bother checking any others.
@@ -1652,6 +1653,10 @@ func takeByTopologyNUMADistributedForResize(logger logr.Logger, topo *topology.C
 			// Check that each NUMA node in this combination can allocate an
 			// even distribution of CPUs in groups of size 'cpuGroupSize',
 			// modulo some remainder.
+			// In resize scenarios, already allocated CPUs might be part of
+			// distribution or remainder. Each NUMA node can have at most
+			// (distribution + cpuGroupSize) CPUs because remainder CPUs are
+			// distributed one cpuGroupSize at a time to a subset of NUMA nodes.
 			distribution := (numCPUs / len(combo) / cpuGroupSize) * cpuGroupSize
 			for _, numa := range combo {
 				cpus := acc.details.CPUsInNUMANodes(numa)
@@ -1659,11 +1664,14 @@ func takeByTopologyNUMADistributedForResize(logger logr.Logger, topo *topology.C
 				if (cpus.Size() + allocateCpus.Size()) < distribution {
 					return Continue
 				}
-				if allocateCpus.Size() > distribution {
+				// Already allocated CPUs can be part of distribution or remainder.
+				// Each NUMA node can receive at most 1 extra cpuGroupSize as remainder.
+				if allocateCpus.Size() > distribution + cpuGroupSize {
 					return Continue
+				} else if allocateCpus.Size() == distribution + cpuGroupSize {
+					allocatedReminderNuma++
 				}
 			}
-
 			// Calculate how many CPUs will be available on each NUMA node in
 			// the system after allocating an even distribution of CPU groups
 			// of size 'cpuGroupSize' from each NUMA node in 'combo'. This will
@@ -1674,13 +1682,18 @@ func takeByTopologyNUMADistributedForResize(logger logr.Logger, topo *topology.C
 				availableAfterAllocation[numa] = acc.details.CPUsInNUMANodes(numa).Size()
 			}
 			for _, numa := range combo {
-				availableAfterAllocation[numa] -= (distribution - acc.resultDetails.CPUsInNUMANodes(numa).Size())
+				if acc.resultDetails.CPUsInNUMANodes(numa).Size() == distribution + cpuGroupSize {
+					// This NUMA node has reached its maximum CPU allocation and should not be allocated further
+					availableAfterAllocation[numa] = 0
+				} else {
+					availableAfterAllocation[numa] -= (distribution - acc.resultDetails.CPUsInNUMANodes(numa).Size())
+				}
 			}
 
 			// Check if there are any remaining CPUs to distribute across the
 			// NUMA nodes once CPUs have been evenly distributed in groups of
 			// size 'cpuGroupSize'.
-			remainder := numCPUs - (distribution * len(combo))
+			remainder := numCPUs - (distribution * len(combo)) - allocatedReminderNuma * cpuGroupSize
 
 			// Get a list of NUMA nodes to consider pulling the remainder CPUs
 			// from. This list excludes NUMA nodes that don't have at least
@@ -1788,7 +1801,7 @@ func takeByTopologyNUMADistributedForResize(logger logr.Logger, topo *topology.C
 
 		// Then allocate any remaining CPUs in groups of size 'cpuGroupSize'
 		// from each NUMA node in the remainder set.
-		remainder := numCPUs - (distribution * len(bestCombo))
+		remainder := numCPUs - (distribution * len(bestCombo)) - allocatedReminderNuma * cpuGroupSize
 		for remainder > 0 {
 			for _, numa := range bestRemainder {
 				if remainder == 0 {
