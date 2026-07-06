@@ -941,25 +941,29 @@ func (p *staticPolicy) RemoveContainer(logger klog.Logger, s state.State, podUID
 
 func (p *staticPolicy) allocateCPUsForResize(logger klog.Logger, s state.State, numCPUs int, numaAffinity bitmask.BitMask, reusableCPUs cpuset.CPUSet, reusableCPUsForResize *cpuset.CPUSet, mustKeepCPUsForResize *cpuset.CPUSet) (topology.Allocation, error) {
 	logger.Info("AllocateCPUs", "numCPUs", numCPUs, "socket", numaAffinity)
-	allocatableCPUs := cpuset.New()
+	allocatableCPUs := p.GetAvailableCPUs(s).Union(reusableCPUs)
+	retainedCPUs := cpuset.New()
+
+	if reusableCPUsForResize != nil && mustKeepCPUsForResize != nil {
+		if !mustKeepCPUsForResize.IsSubsetOf(reusableCPUsForResize.Clone()) {
+			return topology.EmptyAllocation(), fmt.Errorf("requested CPUs to be retained %s are not a subset of reusable CPUs %s", mustKeepCPUsForResize.String(), reusableCPUsForResize.String())
+		}
+	}
 
 	if mustKeepCPUsForResize != nil {
-		if numCPUs >= mustKeepCPUsForResize.Size() {
-			allocatableCPUs = mustKeepCPUsForResize.Clone()
-		}
 		if numCPUs < mustKeepCPUsForResize.Size() {
 			return topology.EmptyAllocation(), fmt.Errorf("requested number of CPUs ( %d ) are less than number of retained CPUs ( %d )", numCPUs, mustKeepCPUsForResize.Size())
 		}
+		retainedCPUs = mustKeepCPUsForResize.Clone()
 	}
 
 	if reusableCPUsForResize != nil {
 		if numCPUs >= reusableCPUsForResize.Size() {
-			allocatableCPUs = allocatableCPUs.Union(p.GetAvailableCPUs(s).Union(reusableCPUsForResize.Clone()))
-		} else if numCPUs < reusableCPUsForResize.Size() {
+			retainedCPUs = reusableCPUsForResize.Clone()
+			allocatableCPUs = allocatableCPUs.Union(reusableCPUsForResize.Clone())
+		} else {
 			allocatableCPUs = reusableCPUsForResize.Clone()
 		}
-	} else {
-		allocatableCPUs = allocatableCPUs.Union(p.GetAvailableCPUs(s).Union(reusableCPUs))
 	}
 
 	// If there are aligned CPUs in numaAffinity, attempt to take those first.
@@ -972,7 +976,7 @@ func (p *staticPolicy) allocateCPUsForResize(logger klog.Logger, s state.State, 
 			numAlignedToAlloc = numCPUs
 		}
 
-		allocatedCPUs, err := p.takeByTopologyForResize(logger, alignedCPUs, numAlignedToAlloc, reusableCPUsForResize, mustKeepCPUsForResize)
+		allocatedCPUs, err := p.takeByTopologyForResize(logger, alignedCPUs, numAlignedToAlloc, &retainedCPUs)
 		if err != nil {
 			return topology.EmptyAllocation(), err
 		}
@@ -982,7 +986,7 @@ func (p *staticPolicy) allocateCPUsForResize(logger klog.Logger, s state.State, 
 
 	if numCPUs > result.CPUs.Size() {
 		// Get any remaining CPUs from what's leftover after attempting to grab aligned ones.
-		remainingCPUs, err := p.takeByTopologyForResize(logger, allocatableCPUs.Difference(result.CPUs), numCPUs-result.CPUs.Size(), reusableCPUsForResize, mustKeepCPUsForResize)
+		remainingCPUs, err := p.takeByTopologyForResize(logger, allocatableCPUs.Difference(result.CPUs), numCPUs-result.CPUs.Size(), &retainedCPUs)
 		if err != nil {
 			return topology.EmptyAllocation(), err
 		}
@@ -1688,17 +1692,12 @@ func (p *staticPolicy) generateCPUTopologyHintsForResize(availableCPUs cpuset.CP
 	return hints
 }
 
-func (p *staticPolicy) takeByTopologyForResize(logger klog.Logger, availableCPUs cpuset.CPUSet, numCPUs int, reusableCPUsForResize *cpuset.CPUSet, mustKeepCPUsForResize *cpuset.CPUSet) (cpuset.CPUSet, error) {
+func (p *staticPolicy) takeByTopologyForResize(logger klog.Logger, availableCPUs cpuset.CPUSet, numCPUs int, retainedCPUs *cpuset.CPUSet) (cpuset.CPUSet, error) {
 
-	// Protect against CPU leaks by failing early
-	if mustKeepCPUsForResize != nil {
-		if !mustKeepCPUsForResize.IsSubsetOf(availableCPUs) {
-			return cpuset.New(), fmt.Errorf("requested CPUs to be retained %s are not a subset of available CPUs %s", mustKeepCPUsForResize.String(), availableCPUs.String())
-		}
-	}
-	if reusableCPUsForResize != nil {
-		if !reusableCPUsForResize.IsSubsetOf(availableCPUs) {
-			return cpuset.New(), fmt.Errorf("reusable CPUs %s are not a subset of available CPUs %s", reusableCPUsForResize.String(), availableCPUs.String())
+	logger.Info("takeByTopologyForResize", "retainedCPUs", retainedCPUs, "availableCPUs", availableCPUs)
+	if retainedCPUs != nil {
+		if !retainedCPUs.IsSubsetOf(availableCPUs) {
+			return cpuset.New(), fmt.Errorf("retainedCPUs CPUs %s are not a subset of available CPUs %s", retainedCPUs.String(), availableCPUs.String())
 		}
 	}
 
@@ -1712,10 +1711,10 @@ func (p *staticPolicy) takeByTopologyForResize(logger klog.Logger, availableCPUs
 		if p.options.FullPhysicalCPUsOnly {
 			cpuGroupSize = p.cpuGroupSize
 		}
-		return takeByTopologyNUMADistributedForResize(logger, p.topology, availableCPUs, numCPUs, cpuGroupSize, cpuSortingStrategy, reusableCPUsForResize, mustKeepCPUsForResize)
+		return takeByTopologyNUMADistributedForResize(logger, p.topology, availableCPUs, numCPUs, cpuGroupSize, cpuSortingStrategy, retainedCPUs)
 	}
 
-	return takeByTopologyNUMAPackedForResize(logger, p.topology, availableCPUs, numCPUs, cpuSortingStrategy, p.options.PreferAlignByUncoreCacheOption, reusableCPUsForResize, mustKeepCPUsForResize)
+	return takeByTopologyNUMAPackedForResize(logger, p.topology, availableCPUs, numCPUs, cpuSortingStrategy, p.options.PreferAlignByUncoreCacheOption, retainedCPUs)
 }
 
 func (p *staticPolicy) getTopologyHintsForResize(logger klog.Logger, s state.State, pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {

@@ -1085,7 +1085,7 @@ type takeByTopologyTestCaseForResize struct {
 	topo          *topology.CPUTopology
 	opts          StaticPolicyOptions
 	availableCPUs cpuset.CPUSet
-	reusableCPUs  cpuset.CPUSet
+	retainedCPUs  cpuset.CPUSet
 	numCPUs       int
 	expErr        string
 	expResult     cpuset.CPUSet
@@ -1347,7 +1347,7 @@ func TestTakeByTopologyNUMAPackedForResize(t *testing.T) {
 				strategy = CPUSortingStrategySpread
 			}
 
-			result, err := takeByTopologyNUMAPackedForResize(logger, tc.topo, tc.availableCPUs, tc.numCPUs, strategy, tc.opts.PreferAlignByUncoreCacheOption, &tc.reusableCPUs, nil)
+			result, err := takeByTopologyNUMAPackedForResize(logger, tc.topo, tc.availableCPUs, tc.numCPUs, strategy, tc.opts.PreferAlignByUncoreCacheOption, &tc.retainedCPUs)
 
 			if tc.expErr != "" && err != nil && err.Error() != tc.expErr {
 				t.Errorf("expected error to be [%v] but it was [%v]", tc.expErr, err)
@@ -1363,7 +1363,7 @@ type takeByTopologyExtendedTestCaseForResize struct {
 	description   string
 	topo          *topology.CPUTopology
 	availableCPUs cpuset.CPUSet
-	reusableCPUs  cpuset.CPUSet
+	retainedCPUs  cpuset.CPUSet
 	numCPUs       int
 	cpuGroupSize  int
 	expErr        string
@@ -1552,7 +1552,7 @@ func TestTakeByTopologyNUMADistributedForResize(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 
-			result, err := takeByTopologyNUMADistributedForResize(logger, tc.topo, tc.availableCPUs, tc.numCPUs, tc.cpuGroupSize, CPUSortingStrategyPacked, &tc.reusableCPUs, nil)
+			result, err := takeByTopologyNUMADistributedForResize(logger, tc.topo, tc.availableCPUs, tc.numCPUs, tc.cpuGroupSize, CPUSortingStrategyPacked, &tc.retainedCPUs)
 			if err != nil {
 				if tc.expErr == "" {
 					t.Errorf("unexpected error [%v]", err)

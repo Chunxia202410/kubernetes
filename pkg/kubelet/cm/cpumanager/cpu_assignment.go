@@ -515,7 +515,7 @@ func newCPUAccumulator(logger klog.Logger, topo *topology.CPUTopology, available
 	return acc
 }
 
-func newCPUAccumulatorForResize(logger klog.Logger, topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuSortingStrategy CPUSortingStrategy, reusableCPUsForResize *cpuset.CPUSet, mustKeepCPUsForResize *cpuset.CPUSet) *cpuAccumulator {
+func newCPUAccumulatorForResize(logger klog.Logger, topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuSortingStrategy CPUSortingStrategy, retainedCPUs *cpuset.CPUSet) *cpuAccumulator {
 	acc := &cpuAccumulator{
 		logger:        logger,
 		topo:          topo,
@@ -525,36 +525,10 @@ func newCPUAccumulatorForResize(logger klog.Logger, topo *topology.CPUTopology, 
 		resultDetails: topo.CPUDetails.KeepOnly(cpuset.New()),
 	}
 
-	if reusableCPUsForResize != nil {
-		if !reusableCPUsForResize.IsEmpty() {
-			// Increase of CPU resources ( scale up )
-			// Take existing from allocated
-			// CPUs
-			if numCPUs > reusableCPUsForResize.Size() {
-				// scale up ...
-				acc.take(reusableCPUsForResize.Clone())
-			}
-
-			// Decrease of CPU resources ( scale down )
-			// Take delta from allocated CPUs, if mustKeepCPUsForResize
-			// is not nil, use explicetely those. If it is nil
-			// take delta starting from lowest CoreId of CPUs ( TODO esotsal, perhaps not needed).
-			if numCPUs < reusableCPUsForResize.Size() {
-				if mustKeepCPUsForResize != nil {
-					// If explicetely CPUs to keep
-					// during scale down is given ( this requires
-					// addition in container[].resources ... which
-					// could be possible to patch ? Esotsal Note This means
-					// modifying API code
-					acc.take(mustKeepCPUsForResize.Clone())
-				}
-			}
-
-			if numCPUs == reusableCPUsForResize.Size() {
-				// nothing to do return as is
-				acc.take(reusableCPUsForResize.Clone())
-				return acc
-			}
+	if retainedCPUs != nil && !retainedCPUs.IsEmpty() {
+		// Take existing from retainedCPUs
+		if numCPUs >= retainedCPUs.Size() {
+			acc.take(retainedCPUs.Clone())
 		}
 	}
 
@@ -1603,26 +1577,18 @@ func takeByTopologyNUMADistributed(logger klog.Logger, topo *topology.CPUTopolog
 	return takeByTopologyNUMAPacked(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, false)
 }
 
-func takeByTopologyNUMADistributedForResize(logger klog.Logger, topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuGroupSize int, cpuSortingStrategy CPUSortingStrategy, reusableCPUsForResize *cpuset.CPUSet, mustKeepCPUsForResize *cpuset.CPUSet) (cpuset.CPUSet, error) {
+func takeByTopologyNUMADistributedForResize(logger klog.Logger, topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuGroupSize int, cpuSortingStrategy CPUSortingStrategy, retainedCPUs *cpuset.CPUSet) (cpuset.CPUSet, error) {
 	// If the number of CPUs requested cannot be handed out in chunks of
 	// 'cpuGroupSize', then we just call out the packing algorithm since we
 	// can't distribute CPUs in this chunk size.
 	// PreferAlignByUncoreCache feature not implemented here yet and set to false.
 	// Support for PreferAlignByUncoreCache to be done at beta release.
 	if (numCPUs % cpuGroupSize) != 0 {
-		return takeByTopologyNUMAPackedForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, false, reusableCPUsForResize, mustKeepCPUsForResize)
-	}
-
-	// If the number of CPUs requested to be retained is not a subset
-	// of reusableCPUs, then we fail early
-	if reusableCPUsForResize != nil && mustKeepCPUsForResize != nil {
-		if !mustKeepCPUsForResize.Clone().IsSubsetOf(reusableCPUsForResize.Clone()) {
-			return cpuset.New(), fmt.Errorf("requested CPUs to be retained %s are not a subset of reusable CPUs %s", mustKeepCPUsForResize.String(), reusableCPUsForResize.String())
-		}
+		return takeByTopologyNUMAPackedForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, false, retainedCPUs)
 	}
 
 	// Otherwise build an accumulator to start allocating CPUs from.
-	acc := newCPUAccumulatorForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, reusableCPUsForResize, mustKeepCPUsForResize)
+	acc := newCPUAccumulatorForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, retainedCPUs)
 	if acc.isSatisfied() {
 		return acc.result, nil
 	}
@@ -1813,7 +1779,7 @@ func takeByTopologyNUMADistributedForResize(logger klog.Logger, topo *topology.C
 		distribution := (numCPUs / len(bestCombo) / cpuGroupSize) * cpuGroupSize
 		for _, numa := range bestCombo {
 			allocatedCPUs := acc.resultDetails.CPUsInNUMANodes(numa)
-			cpus, _ := takeByTopologyNUMAPackedForResize(logger, acc.topo, acc.details.CPUsInNUMANodes(numa), distribution, cpuSortingStrategy, false, &allocatedCPUs, nil)
+			cpus, _ := takeByTopologyNUMAPackedForResize(logger, acc.topo, acc.details.CPUsInNUMANodes(numa), distribution, cpuSortingStrategy, false, &allocatedCPUs)
 			acc.take(cpus.Difference(allocatedCPUs))
 		}
 
@@ -1830,7 +1796,7 @@ func takeByTopologyNUMADistributedForResize(logger klog.Logger, topo *topology.C
 				}
 				allocatedCPUs := acc.resultDetails.CPUsInNUMANodes(numa)
 				needCPUsInNuma := allocatedCPUs.Size() + cpuGroupSize
-				cpus, _ := takeByTopologyNUMAPackedForResize(logger, acc.topo, acc.details.CPUsInNUMANodes(numa), needCPUsInNuma, cpuSortingStrategy, false, &allocatedCPUs, nil)
+				cpus, _ := takeByTopologyNUMAPackedForResize(logger, acc.topo, acc.details.CPUsInNUMANodes(numa), needCPUsInNuma, cpuSortingStrategy, false, &allocatedCPUs)
 				acc.take(cpus.Difference(allocatedCPUs))
 				remainder -= cpuGroupSize
 			}
@@ -1854,20 +1820,13 @@ func takeByTopologyNUMADistributedForResize(logger klog.Logger, topo *topology.C
 
 	// If we never found a combination of NUMA nodes that we could properly
 	// distribute CPUs across, fall back to the packing algorithm.
-	return takeByTopologyNUMAPackedForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, false, reusableCPUsForResize, mustKeepCPUsForResize)
+	return takeByTopologyNUMAPackedForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, false, retainedCPUs)
 }
 
-func takeByTopologyNUMAPackedForResize(logger klog.Logger, topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuSortingStrategy CPUSortingStrategy, preferAlignByUncoreCache bool, reusableCPUsForResize *cpuset.CPUSet, mustKeepCPUsForResize *cpuset.CPUSet) (cpuset.CPUSet, error) {
+func takeByTopologyNUMAPackedForResize(logger klog.Logger, topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int, cpuSortingStrategy CPUSortingStrategy, preferAlignByUncoreCache bool, retainedCPUs *cpuset.CPUSet) (cpuset.CPUSet, error) {
 
-	// If the number of CPUs requested to be retained is not a subset
-	// of reusableCPUs, then we fail early
-	if reusableCPUsForResize != nil && mustKeepCPUsForResize != nil {
-		if !mustKeepCPUsForResize.Clone().IsSubsetOf(reusableCPUsForResize.Clone()) {
-			return cpuset.New(), fmt.Errorf("requested CPUs to be retained %s are not a subset of reusable CPUs %s", mustKeepCPUsForResize.String(), reusableCPUsForResize.String())
-		}
-	}
-
-	acc := newCPUAccumulatorForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, reusableCPUsForResize, mustKeepCPUsForResize)
+	acc := newCPUAccumulatorForResize(logger, topo, availableCPUs, numCPUs, cpuSortingStrategy, retainedCPUs)
+	logger.Info("takeByTopologyNUMAPackedForResize", "acc.result", acc.result, "availableCPUs", availableCPUs)
 	if acc.isSatisfied() {
 		return acc.result, nil
 	}
