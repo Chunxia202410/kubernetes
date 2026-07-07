@@ -102,6 +102,11 @@ func (m *fakeManager) GetCPUAffinity(podUID, containerName string) cpuset.CPUSet
 	return cpuset.New()
 }
 
+func (m *fakeManager) GetAssignments(podUID, containerName string) string {
+	m.logger.Info("GetAssignments", "podUID", podUID, "containerName", containerName)
+	return ""
+}
+
 func (m *fakeManager) GetAllCPUs() cpuset.CPUSet {
 	m.logger.Info("GetAllCPUs")
 	return cpuset.New()

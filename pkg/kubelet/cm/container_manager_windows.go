@@ -350,6 +350,16 @@ func (cm *containerManagerImpl) GetPodCPUs(podUID string) []int64 {
 	return nil
 }
 
+func (cm *containerManagerImpl) GetAssignments(podUID, containerName string) string {
+	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.WindowsCPUAndMemoryAffinity) {
+		if cm.cpuManager != nil {
+			return cm.cpuManager.GetAssignments(podUID, containerName)
+		}
+		return ""
+	}
+	return ""
+}
+
 func (cm *containerManagerImpl) GetAllocatableCPUs() []int64 {
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.WindowsCPUAndMemoryAffinity) {
 		if cm.cpuManager != nil {

@@ -162,6 +162,9 @@ type ContainerManager interface {
 	// ContainerHasExclusiveCPUs returns true if the provided container in the pod has exclusive cpu
 	ContainerHasExclusiveCPUs(logger klog.Logger, pod *v1.Pod, container *v1.Container) bool
 
+	// GetAssignments returns the current allocated CPU for the specified pod and container.
+	GetAssignments(podUID, containerName string) string
+
 	// Implements the PodResources Provider API
 	podresources.CPUsProvider
 	podresources.DevicesProvider

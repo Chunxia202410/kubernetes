@@ -114,6 +114,9 @@ type Manager interface {
 
 	// GetResourceIsolationLevel returns the isolation level of the container.
 	GetResourceIsolationLevel(pod *v1.Pod, container *v1.Container) cmqos.ResourceIsolationLevel
+
+	// GetAssignments returns the current allocated CPU for the specified pod and container.
+	GetAssignments(podUID, containerName string) string
 }
 
 type manager struct {
@@ -450,7 +453,6 @@ func (m *manager) reconcileState(ctx context.Context) (success []reconciledConta
 	failure = []reconciledContainer{}
 
 	rootLogger := klog.FromContext(ctx)
-
 	m.removeStaleState(rootLogger)
 	for _, pod := range m.activePods() {
 		podLogger := klog.LoggerWithValues(rootLogger, "pod", klog.KObj(pod))
@@ -611,4 +613,8 @@ func (m *manager) GetResourceIsolationLevel(pod *v1.Pod, container *v1.Container
 	}
 
 	return cmqos.ResourceIsolationContainer
+}
+
+func (m *manager) GetAssignments(podUID, containerName string) string {
+	return m.policy.GetAssignments(m.state, podUID, containerName)
 }

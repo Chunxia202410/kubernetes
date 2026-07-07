@@ -381,6 +381,15 @@ func (p *staticPolicy) validatePodScopeResources(logger klog.Logger, pod *v1.Pod
 	return nil
 }
 
+// GetAssignments returns the current allocated CPU for the specified pod and container.
+func (p *staticPolicy) GetAssignments(s state.State, podUID, containerName string) string {
+	cpus, ok := s.GetCPUSet(podUID, containerName)
+	if !ok {
+		return ""
+	}
+	return cpus.String()
+}
+
 // This function is the entry point for pod-level resource allocation.
 // It's called once per pod by the Topology Manager's pod-scope admit handler.
 // The logic here allocates a single "bubble" of CPUs for the entire pod

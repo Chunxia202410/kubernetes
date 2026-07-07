@@ -1011,6 +1011,13 @@ func (cm *containerManagerImpl) GetPodCPUs(podUID string) []int64 {
 	return int64Slice(cm.cpuManager.GetPodCPUs(podUID).UnsortedList())
 }
 
+func (cm *containerManagerImpl) GetAssignments(podUID, containerName string) string {
+	if cm.cpuManager != nil {
+		return cm.cpuManager.GetAssignments(podUID, containerName)
+	}
+	return ""
+}
+
 func (cm *containerManagerImpl) GetAllocatableCPUs() []int64 {
 	if cm.cpuManager != nil {
 		return int64Slice(cm.cpuManager.GetAllocatableCPUs().UnsortedList())

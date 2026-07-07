@@ -335,6 +335,63 @@ func (_c *MockContainerManager_GetAllocateResourcesPodAdmitHandler_Call) RunAndR
 	return _c
 }
 
+// GetAssignments provides a mock function for the type MockContainerManager
+func (_mock *MockContainerManager) GetAssignments(podUID string, containerName string) string {
+	ret := _mock.Called(podUID, containerName)
+
+	if len(ret) == 0 {
+		panic("no return value specified for GetAssignments")
+	}
+
+	var r0 string
+	if returnFunc, ok := ret.Get(0).(func(string, string) string); ok {
+		r0 = returnFunc(podUID, containerName)
+	} else {
+		r0 = ret.Get(0).(string)
+	}
+	return r0
+}
+
+// MockContainerManager_GetAssignments_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'GetAssignments'
+type MockContainerManager_GetAssignments_Call struct {
+	*mock.Call
+}
+
+// GetAssignments is a helper method to define mock.On call
+//   - podUID string
+//   - containerName string
+func (_e *MockContainerManager_Expecter) GetAssignments(podUID interface{}, containerName interface{}) *MockContainerManager_GetAssignments_Call {
+	return &MockContainerManager_GetAssignments_Call{Call: _e.mock.On("GetAssignments", podUID, containerName)}
+}
+
+func (_c *MockContainerManager_GetAssignments_Call) Run(run func(podUID string, containerName string)) *MockContainerManager_GetAssignments_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 string
+		if args[0] != nil {
+			arg0 = args[0].(string)
+		}
+		var arg1 string
+		if args[1] != nil {
+			arg1 = args[1].(string)
+		}
+		run(
+			arg0,
+			arg1,
+		)
+	})
+	return _c
+}
+
+func (_c *MockContainerManager_GetAssignments_Call) Return(s string) *MockContainerManager_GetAssignments_Call {
+	_c.Call.Return(s)
+	return _c
+}
+
+func (_c *MockContainerManager_GetAssignments_Call) RunAndReturn(run func(podUID string, containerName string) string) *MockContainerManager_GetAssignments_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // GetCPUs provides a mock function for the type MockContainerManager
 func (_mock *MockContainerManager) GetCPUs(pod *v1.Pod, container *v1.Container) []int64 {
 	ret := _mock.Called(pod, container)
