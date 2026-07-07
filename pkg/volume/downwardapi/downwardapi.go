@@ -23,8 +23,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/api/v1/resource"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/fieldpath"
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
@@ -261,11 +263,21 @@ func CollectData(items []v1.DownwardAPIVolumeFile, pod *v1.Pod, host volume.Volu
 				fileProjection.Data = []byte(values)
 			}
 		} else if fileInfo.ResourceFieldRef != nil {
+			// Check DownwardAPIAssignedResources feature gate for assigned.cpuset
+			if fileInfo.ResourceFieldRef.Resource == "assigned.cpuset" {
+				if !utilfeature.DefaultFeatureGate.Enabled(features.DownwardAPIAssignedResources) {
+					klog.V(4).InfoS("Skipping assigned.cpuset because DownwardAPIAssignedResources feature gate is disabled",
+						"pod", klog.KObj(pod), "container", fileInfo.ResourceFieldRef.ContainerName)
+					// Skip assigned.cpuset when feature gate is disabled (backward compatible)
+					continue
+				}
+			}
+
 			containerName := fileInfo.ResourceFieldRef.ContainerName
 			nodeAllocatable, err := host.GetNodeAllocatable()
 			if err != nil {
 				errlist = append(errlist, err)
-			} else if values, err := resource.ExtractResourceValueByContainerNameAndNodeAllocatable(fileInfo.ResourceFieldRef, pod, containerName, nodeAllocatable); err != nil {
+			} else if values, err := resource.ExtractResourceValueByContainerNameAndNodeAllocatable(fileInfo.ResourceFieldRef, pod, containerName, nodeAllocatable, host); err != nil {
 				klog.Errorf("Unable to extract field %s: %s", fileInfo.ResourceFieldRef.Resource, err.Error())
 				errlist = append(errlist, err)
 			} else {

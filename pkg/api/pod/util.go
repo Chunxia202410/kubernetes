@@ -435,6 +435,7 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 		AllowExistingRestartContainerForNonSidecarInitContainer: hasRestartContainerForNonSidecarInitContainer(oldPodSpec),
 		AllowSysAdminWhenPrivilegeEscalationFalse:               false,
 		AllowMLDSAPodCertificateKeyTypes:                        utilfeature.DefaultFeatureGate.Enabled(features.PodCertificateMLDSA),
+		AllowDownwardAPIAssignedResources:                       utilfeature.DefaultFeatureGate.Enabled(features.DownwardAPIAssignedResources),
 	}
 
 	// If old spec uses relaxed validation or enabled the RelaxedEnvironmentVariableValidation feature gate,
@@ -494,6 +495,8 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 
 		// If old spec has a projected pod certificate requesting an ML-DSA key type, allow it
 		opts.AllowMLDSAPodCertificateKeyTypes = opts.AllowMLDSAPodCertificateKeyTypes || hasMLDSAPodCertificateProjection(oldPodSpec.Volumes)
+		// If old spec has assigned.cpuset in downwardAPI volumes, allow it
+		opts.AllowDownwardAPIAssignedResources = opts.AllowDownwardAPIAssignedResources || assignedCpusetInUse(oldPodSpec)
 	}
 	if oldPodMeta != nil && !opts.AllowInvalidPodDeletionCost {
 		// This is an update, so validate only if the existing object was valid.
@@ -2194,6 +2197,38 @@ func dropImageVolumeWithDigest(podStatus *api.PodStatus) {
 			podStatus.EphemeralContainerStatuses[i].VolumeMounts[j].VolumeStatus = nil
 		}
 	}
+}
+
+// assignedCpusetInUse returns true if the pod spec has assigned.cpuset references
+// in downwardAPI volumes or projected volumes with downwardAPI.
+func assignedCpusetInUse(podSpec *api.PodSpec) bool {
+	if podSpec == nil {
+		return false
+	}
+
+	for _, vol := range podSpec.Volumes {
+		// Check DownwardAPI volume
+		if vol.DownwardAPI != nil {
+			for _, item := range vol.DownwardAPI.Items {
+				if item.ResourceFieldRef != nil && item.ResourceFieldRef.Resource == "assigned.cpuset" {
+					return true
+				}
+			}
+		}
+		// Check Projected volume with DownwardAPI projection
+		if vol.Projected != nil {
+			for _, source := range vol.Projected.Sources {
+				if source.DownwardAPI != nil {
+					for _, item := range source.DownwardAPI.Items {
+						if item.ResourceFieldRef != nil && item.ResourceFieldRef.Resource == "assigned.cpuset" {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // hasRestartContainerForNonSidecarInitContainer returns true if any non-sidecar init container

@@ -379,6 +379,13 @@ const (
 	// DisableNodeKubeProxyVersion disable the status.nodeInfo.kubeProxyVersion field of v1.Node
 	DisableNodeKubeProxyVersion featuregate.Feature = "DisableNodeKubeProxyVersion"
 
+	// owner: @Chunxia202410
+	// kep: http://kep.k8s.io/6369
+	//
+	// Allows downward API volume to expose CPU Manager assigned cpuset via assigned.cpuset field.
+	// Allows downward API volume to expose Memory Manager assigned memory NUMA nodes via assigned.memset field.
+	DownwardAPIAssignedResources featuregate.Feature = "DownwardAPIAssignedResources"
+
 	// owner: @nispriha
 	// kep: https://kep.k8s.io/5502
 	//
@@ -1511,6 +1518,10 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 		{Version: version.MustParse("1.36"), Default: true, PreRelease: featuregate.Deprecated, LockToDefault: true}, // lock to default in 1.36 and remove in v1.39
 	},
 
+	DownwardAPIAssignedResources: {
+		{Version: version.MustParse("1.38"), Default: false, PreRelease: featuregate.Alpha},
+	},
+
 	EmptyDirVolumeMode: {
 		{Version: version.MustParse("1.37"), Default: false, PreRelease: featuregate.Alpha},
 	},
@@ -2495,6 +2506,8 @@ var defaultKubernetesFeatureGateDependencies = map[featuregate.Feature][]feature
 	DisableCPUQuotaWithExclusiveCPUs: {},
 
 	DisableNodeKubeProxyVersion: {},
+
+	DownwardAPIAssignedResources: {},
 
 	EmptyDirVolumeMode: {},
 

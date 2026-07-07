@@ -98,12 +98,13 @@ func TestDownwardAPI(t *testing.T) {
 		"multiline": "c\nb\na",
 	}
 	testCases := []struct {
-		name           string
-		files          map[string]string
-		modes          map[string]int32
-		podLabels      map[string]string
-		podAnnotations map[string]string
-		steps          []testStep
+		name              string
+		files             map[string]string
+		modes             map[string]int32
+		podLabels         map[string]string
+		podAnnotations    map[string]string
+		resourceFieldRefs map[string]v1.ResourceFieldSelector
+		steps             []testStep
 	}{
 		{
 			name:      "test_labels",
@@ -191,9 +192,21 @@ func TestDownwardAPI(t *testing.T) {
 				verifyMode{stepName{"name_file_name"}, 0400},
 			},
 		},
+		{
+			name: "test_assigned_cpuset",
+			resourceFieldRefs: map[string]v1.ResourceFieldSelector{
+				"cpuset_assigned": {
+					ContainerName: "test-container",
+					Resource:      "assigned.cpuset",
+				},
+			},
+			steps: []testStep{
+				verifyLinesInFile{stepName{"cpuset_assigned"}, volumetest.TestCPUSet},
+			},
+		},
 	}
 	for _, testCase := range testCases {
-		test := newDownwardAPITest(t, testCase.name, testCase.files, testCase.podLabels, testCase.podAnnotations, testCase.modes)
+		test := newDownwardAPITest(t, testCase.name, testCase.files, testCase.podLabels, testCase.podAnnotations, testCase.modes, testCase.resourceFieldRefs)
 		for _, step := range testCase.steps {
 			test.t.Logf("Test case: %q Step: %q", testCase.name, step.getName())
 			step.run(test)
@@ -326,7 +339,7 @@ type downwardAPITest struct {
 	rootDir    string
 }
 
-func newDownwardAPITest(t *testing.T, name string, volumeFiles, podLabels, podAnnotations map[string]string, modes map[string]int32) *downwardAPITest {
+func newDownwardAPITest(t *testing.T, name string, volumeFiles, podLabels, podAnnotations map[string]string, modes map[string]int32, resourceFieldRefs map[string]v1.ResourceFieldSelector) *downwardAPITest {
 	defaultMode := int32(0644)
 	var files []v1.DownwardAPIVolumeFile
 	for path, fieldPath := range volumeFiles {
@@ -341,13 +354,34 @@ func newDownwardAPITest(t *testing.T, name string, volumeFiles, podLabels, podAn
 		}
 		files = append(files, file)
 	}
+	for path, resourceFieldRef := range resourceFieldRefs {
+		file := v1.DownwardAPIVolumeFile{
+			Path:             path,
+			ResourceFieldRef: &resourceFieldRef,
+		}
+		if mode, found := modes[path]; found {
+			file.Mode = &mode
+		}
+		files = append(files, file)
+	}
 	podMeta := metav1.ObjectMeta{
 		Name:        testName,
 		Namespace:   testNamespace,
 		Labels:      podLabels,
 		Annotations: podAnnotations,
 	}
-	clientset := fake.NewSimpleClientset(&v1.Pod{ObjectMeta: podMeta})
+	pod := &v1.Pod{
+		ObjectMeta: podMeta,
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{
+					Name:  "test-container",
+					Image: "test-image",
+				},
+			},
+		},
+	}
+	clientset := fake.NewSimpleClientset(pod)
 
 	pluginMgr := volume.VolumePluginMgr{}
 	rootDir, host := newTestHost(t, clientset)
@@ -367,7 +401,7 @@ func newDownwardAPITest(t *testing.T, name string, volumeFiles, podLabels, podAn
 		},
 	}
 	podMeta.UID = testPodUID
-	pod := &v1.Pod{ObjectMeta: podMeta}
+	pod.ObjectMeta = podMeta
 	mounter, err := plugin.NewMounter(volume.NewSpecFromVolume(volumeSpec), pod)
 	if err != nil {
 		t.Errorf("Failed to make a new Mounter: %v", err)
