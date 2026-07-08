@@ -25,12 +25,12 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	helpers "k8s.io/component-helpers/resource"
 	"k8s.io/client-go/rest"
+	helpers "k8s.io/component-helpers/resource"
 	podutils "k8s.io/kubectl/pkg/util/podutils"
-	"k8s.io/utils/cpuset"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	"k8s.io/kubernetes/test/utils/client-go/ktesting"
+	"k8s.io/utils/cpuset"
 )
 
 // HaveContainerCPUsCount verifies that the container has the expected number of CPUs
@@ -184,8 +184,7 @@ func WaitForPodResizeActuation(tCtx ktesting.TContext, config *rest.Config, pod 
 		}
 
 		return nil
-	}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.Succeed())
+	}).WithTimeout(2 * time.Minute).WithPolling(1 * time.Second).Should(gomega.Succeed())
 
 	return resizedPod
 }
-

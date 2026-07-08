@@ -245,43 +245,10 @@ func testCPUScaleDownDelayKubeletUpgradeDowngrade(tCtx ktesting.TContext) {
 
 	tCtx.Log("Stage 2 PASS: Pod-A created, scaled up (1→2) and scaled down (2→1) initiated (not waiting for actuation)")
 
-	// ---- Stage 3: Downgrade kubelet to previous release and check pod state ----
-	var restoreOpts localupcluster.ModifyOptions
-	tCtx.Step("downgrade-kubelet", func(tCtx ktesting.TContext) {
-		// Downgrade only the kubelet to the previous release binary.
-		// kube-apiserver stays at master version.
-		previousKubeletPath := path.Join(previousBinDir, string(localupcluster.Kubelet))
-		tCtx.Logf("Downgrading kubelet to previous release binary at %s", previousKubeletPath)
-		restoreOpts = cluster.Modify(tCtx, "1-previous-kubelet", localupcluster.ModifyOptions{
-			FileByComponent: map[localupcluster.ClusterComponentName]string{
-				localupcluster.Kubelet: previousKubeletPath,
-			},
-			// The previous kubelet doesn't recognize certain flags and feature gates
-			// that were added in the current release. Remove/replace them to prevent
-			// the old kubelet from crashing on startup.
-			ModifyFlagsByComponent: map[localupcluster.ClusterComponentName]map[string]string{
-				localupcluster.Kubelet: {
-					// Drop entirely — old kubelet doesn't support scale-delay-time option.
-					"--cpu-manager-policy-options": "",
-					// Replace feature gates — remove DownwardAPIAssignedResources and
-					// InPlacePodVerticalScalingExclusiveCPUs (not recognized by old kubelet).
-					// Value is the value part only, not the full token.
-					"--feature-gates": "CPUManagerPolicyAlphaOptions=true",
-				},
-			},
-		})
-		tCtx.Logf("Kubelet downgraded to previous release (version %d.%d)", major, previousMinor)
-	})
+	// ---- Stage 3 & 4: Downgrade kubelet, verify pod state ----
+	restoreOpts := stage3And4KubeletDowngrade(tCtx, restConfig, cluster, podA, containerAName, previousBinDir, major, previousMinor)
 
-	// Wait for node to be ready after kubelet downgrade
-	tCtx.Step("wait-for-node-after-downgrade", func(tCtx ktesting.TContext) {
-		tCtx.ExpectNoError(e2enode.WaitForAllNodesSchedulable(tCtx, tCtx.Client(), 5*time.Minute))
-		tCtx.Logf("Node is schedulable after kubelet downgrade")
-	})
-
-	fmt.Println("Check me : ", restoreOpts)
-
-	tCtx.Log("Stage 3 PASS: Kubelet downgraded to previous release, pod still running")
+	tCtx.Log("Stage 3 & 4 PASS: Kubelet downgraded, pod state verified")
 
 	// ---- Stage 5: Restore kubelet to master binary ----
 	tCtx.Step("restore-kubelet", func(tCtx ktesting.TContext) {
@@ -390,4 +357,123 @@ func patchAndVerifyPodResize(
 
 	// Step 10: Return current container state
 	return desiredContainers
+}
+
+// stage3And4KubeletDowngrade downgrades the kubelet to a previous release binary and
+// verifies the pod's state after the downgrade. It prints the pod spec for visibility
+// and checks that the pod is still running with the correct cpuset.
+//
+// Steps:
+//  1. Downgrade kubelet to previous release binary (via cluster.Modify)
+//  2. Wait for node to be schedulable after downgrade
+//  3. Fetch the pod and print its spec (containers, resources, status, conditions)
+//  4. Verify pod is still running
+//  5. Verify cgroup cpuset is still correct (should be 2 CPUs from the scale-up)
+//
+// Returns the ModifyOptions needed to restore the kubelet in Stage 5.
+func stage3And4KubeletDowngrade(
+	tCtx ktesting.TContext,
+	restConfig *rest.Config,
+	cluster *localupcluster.Cluster,
+	pod *v1.Pod,
+	containerName string,
+	previousBinDir string,
+	major, previousMinor uint,
+) localupcluster.ModifyOptions {
+	tCtx.Helper()
+
+	var restoreOpts localupcluster.ModifyOptions
+
+	// Step 1: Downgrade kubelet to previous release binary and disable DownwardAPIAssignedResources
+	tCtx.Step("downgrade-kubelet", func(tCtx ktesting.TContext) {
+		previousKubeletPath := path.Join(previousBinDir, string(localupcluster.Kubelet))
+		tCtx.Logf("Downgrading kubelet to previous release binary at %s", previousKubeletPath)
+		restoreOpts = cluster.Modify(tCtx, "1-previous-kubelet", localupcluster.ModifyOptions{
+			FileByComponent: map[localupcluster.ClusterComponentName]string{
+				localupcluster.Kubelet: previousKubeletPath,
+			},
+			// The previous kubelet doesn't recognize certain flags and feature gates
+			// that were added in the current release. Remove/replace them to prevent
+			// the old kubelet from crashing on startup.
+			ModifyFlagsByComponent: map[localupcluster.ClusterComponentName]map[string]string{
+				localupcluster.Kubelet: {
+					// Drop entirely — old kubelet doesn't support scale-delay-time option.
+					"--cpu-manager-policy-options": "",
+					// Replace feature gates — remove DownwardAPIAssignedResources and
+					// InPlacePodVerticalScalingExclusiveCPUs (not recognized by old kubelet).
+					"--feature-gates": "CPUManagerPolicyAlphaOptions=true",
+				},
+			},
+			// Disable DownwardAPIAssignedResources on kube-apiserver to simulate
+			// the previous release where this feature gate didn't exist.
+			FeatureGatesByComponent: map[localupcluster.ClusterComponentName]string{
+				localupcluster.KubeAPIServer: "DownwardAPIAssignedResources=false",
+			},
+		})
+		tCtx.Logf("Kubelet downgraded to previous release (version %d.%d)", major, previousMinor)
+	})
+
+	// Step 2: Wait for node to be schedulable after kubelet downgrade
+	tCtx.Step("wait-for-node-after-downgrade", func(tCtx ktesting.TContext) {
+		tCtx.ExpectNoError(e2enode.WaitForAllNodesSchedulable(tCtx, tCtx.Client(), 5*time.Minute))
+		tCtx.Logf("Node is schedulable after kubelet downgrade")
+	})
+
+	// Step 3: Verify pod is still running after kubelet downgrade
+	tCtx.Step("verify-pod-running", func(tCtx ktesting.TContext) {
+		tCtx.Eventually(func(tCtx ktesting.TContext) error {
+			freshPod, err := tCtx.Client().CoreV1().Pods(pod.Namespace).Get(tCtx, pod.Name, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			if freshPod.Status.Phase != v1.PodRunning {
+				return fmt.Errorf("pod phase is %s, expected Running", freshPod.Status.Phase)
+			}
+			return nil
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.Succeed(),
+			"pod should be Running after kubelet downgrade")
+		tCtx.Logf("Pod %q is still Running after kubelet downgrade", pod.Name)
+	})
+
+	// Step 4: Deploy Pod-B with DownwardAPI volume (after kubelet downgrade)
+	// Since DownwardAPIAssignedResources is now disabled on kube-apiserver, the old kubelet
+	// should not populate the assigned.cpuset in the DownwardAPI volume for new pods.
+	var podB *v1.Pod
+	const podBName = "pod-b-downgrade-test"
+	const containerBName = "gu-container-b"
+	podBContainers := []podresize.ResizableContainerInfo{
+		{
+			Name: containerBName,
+			Resources: &cgroups.ContainerResources{
+				CPUReq: "1000m", CPULim: "1000m",
+				MemReq: "200Mi", MemLim: "200Mi",
+			},
+			HasExclusiveCPUs: true,
+		},
+	}
+	tCtx.Step("create-pod-b", func(tCtx ktesting.TContext) {
+		tStamp := strconv.Itoa(time.Now().Nanosecond())
+		podSpec := podresize.MakeResizablePodWithDownwardAPI(pod.Namespace, podBName, tStamp, podBContainers, nil)
+		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
+		podB = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
+		tCtx.Logf("Pod-B %q created and running after kubelet downgrade", podBName)
+	})
+
+	// Step 5: Verify DownwardAPI volume is dropped (cpuset not populated)
+	// With DownwardAPIAssignedResources=false, the old kubelet should not write the
+	// assigned.cpuset value to the DownwardAPI volume file.
+	tCtx.Step("verify-downwardapi-dropped", func(tCtx ktesting.TContext) {
+		// Re-fetch podB to get the latest status
+		freshPod, err := tCtx.Client().CoreV1().Pods(podB.Namespace).Get(tCtx, podB.Name, metav1.GetOptions{})
+		tCtx.ExpectNoError(err, "failed to get pod %s", podB.Name)
+		podB = freshPod
+
+		tCtx.Eventually(func(tCtx ktesting.TContext) bool {
+			return common.HaveDownwardAPICpusetNotVisible(tCtx, restConfig, podB, containerBName)
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.BeTrue(),
+			"DownwardAPI cpuset should not be visible for container %q in pod %q", containerBName, podBName)
+		tCtx.Logf("Verified DownwardAPI cpuset is NOT visible for Pod-B after kubelet downgrade")
+	})
+
+	return restoreOpts
 }
