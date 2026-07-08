@@ -113,16 +113,17 @@ func testCPUScaleDownDelayKubeletUpgradeDowngrade(tCtx ktesting.TContext) {
 	// ---- Stage 0: Download previous release binaries ----
 	// Download the previous Kubernetes release binaries so we can downgrade the kubelet later.
 	// KUBERNETES_SERVER_CACHE_DIR can be set to cache downloaded binaries across test runs.
-	cacheDir, _ := os.LookupEnv("KUBERNETES_SERVER_CACHE_DIR")
+	// cacheDir, _ := os.LookupEnv("KUBERNETES_SERVER_CACHE_DIR")
 
 	var previousBinDir string
 	var major, previousMinor uint
-	var gitVersion string
-	tCtx.Step("download-previous-release-binaries", func(tCtx ktesting.TContext) {
-		previousBinDir, major, previousMinor, gitVersion = common.DownloadPreviousReleaseBinaries(tCtx, repoRoot(), cacheDir)
-		tCtx.Logf("previous release binaries downloaded to %s (version %d.%d, git version %s)",
-			previousBinDir, major, previousMinor, gitVersion)
-	})
+	// var gitVersion string
+	// tCtx.Step("download-previous-release-binaries", func(tCtx ktesting.TContext) {
+	// 	previousBinDir, major, previousMinor, gitVersion = common.DownloadPreviousReleaseBinaries(tCtx, repoRoot(), cacheDir)
+	// 	tCtx.Logf("previous release binaries downloaded to %s (version %d.%d, git version %s)",
+	// 		previousBinDir, major, previousMinor, gitVersion)
+	// })
+	previousBinDir = "/home/ubuntu/work_dir/2026/k8s-main/ashish_repo/kubernetes/_output/bin/cache-dir/v1.36.2"
 
 	// Verify the previous kubelet binary exists. Fail if it doesn't.
 	tCtx.Step("verify-previous-kubelet-binary", func(tCtx ktesting.TContext) {
@@ -224,10 +225,10 @@ func testCPUScaleDownDelayKubeletUpgradeDowngrade(tCtx ktesting.TContext) {
 				},
 			},
 			2,              // expected CPU count after resize
-			true,           // isCheckscaleDelayTime = true
 			scaleDelayTime, // scale delay time
 			false,          // isScaleDown = false (scale up)
 			true,           // waitForActuation = true (wait for scale-up to complete)
+			true,           // checkDownwardAPI = true (Pod-A has DownwardAPI volume)
 		)
 
 		// Scale down: CPU 2 → 1 (initiate but don't wait for actuation)
@@ -236,32 +237,22 @@ func testCPUScaleDownDelayKubeletUpgradeDowngrade(tCtx ktesting.TContext) {
 			currentContainers,  // containers before resize (2 CPUs)
 			originalContainers, // desired containers (1 CPU, same as original)
 			1,                  // expected CPU count after resize
-			true,               // isCheckscaleDelayTime = true
 			scaleDelayTime,     // scale delay time
 			true,               // isScaleDown = true
 			false,              // waitForActuation = false (don't wait, will check in Stage 3)
+			true,               // checkDownwardAPI = true (Pod-A has DownwardAPI volume)
 		)
 	})
 
 	tCtx.Log("Stage 2 PASS: Pod-A created, scaled up (1→2) and scaled down (2→1) initiated (not waiting for actuation)")
 
 	// ---- Stage 3 & 4: Downgrade kubelet, verify pod state ----
-	restoreOpts := stage3And4KubeletDowngrade(tCtx, restConfig, cluster, podA, containerAName, previousBinDir, major, previousMinor)
-
+	restoreOpts, podB, containerBName := stage3And4KubeletDowngrade(tCtx, restConfig, cluster, podA, containerAName, previousBinDir, major, previousMinor)
+	
 	tCtx.Log("Stage 3 & 4 PASS: Kubelet downgraded, pod state verified")
 
-	// ---- Stage 5: Restore kubelet to master binary ----
-	tCtx.Step("restore-kubelet", func(tCtx ktesting.TContext) {
-		tCtx.Logf("Restoring kubelet to master binary")
-		cluster.Modify(tCtx, "2-master-restored", restoreOpts)
-		tCtx.Logf("Kubelet restored to master binary")
-	})
-
-	// Wait for node to be ready after kubelet restore
-	tCtx.Step("wait-for-node-after-restore", func(tCtx ktesting.TContext) {
-		tCtx.ExpectNoError(e2enode.WaitForAllNodesSchedulable(tCtx, tCtx.Client(), 5*time.Minute))
-		tCtx.Logf("Node is schedulable after kubelet restore")
-	})
+	// ---- Stage 5: Restore kubelet to master binary, verify Pod-B ----
+	stage5KubeletRestore(tCtx, restConfig, cluster, restoreOpts, podB, containerBName, scaleDelayTime)
 
 	tCtx.Log("Stage 5 PASS: Kubelet restored to master binary")
 
@@ -296,10 +287,10 @@ func patchAndVerifyPodResize(
 	containersBeforeResize []podresize.ResizableContainerInfo,
 	desiredContainers []podresize.ResizableContainerInfo,
 	expectedCPUCount int,
-	isCheckscaleDelayTime bool,
 	scaleDelayTime int,
 	isScaleDown bool,
 	waitForActuation bool,
+	checkDownwardAPI bool,
 ) []podresize.ResizableContainerInfo {
 	tCtx.Helper()
 
@@ -314,12 +305,16 @@ func patchAndVerifyPodResize(
 		pod.Name, "application/strategic-merge-patch+json", patchBytes, metav1.PatchOptions{}, "resize")
 	tCtx.ExpectNoError(err, "failed to patch pod %s for resize", pod.Name)
 
-	// Step 3: Verify cpuset in DownwardAPI volume (use Eventually since kubelet may need time to update)
-	tCtx.Logf("Verifying cpuset in DownwardAPI volume for container %q (expecting %d CPUs)", containerName, expectedCPUCount)
-	tCtx.Eventually(func(tCtx ktesting.TContext) bool {
-		return common.HaveDownwardAPICPUsCount(tCtx, restConfig, patchedPod, containerName, expectedCPUCount)
-	}).WithTimeout(2*time.Minute).Should(gomega.BeTrue(),
-		"DownwardAPI cpuset should reflect %d CPUs for container %q", expectedCPUCount, containerName)
+	// Step 3: Verify cpuset in DownwardAPI volume (only if DownwardAPI is present)
+	if checkDownwardAPI {
+		tCtx.Logf("Verifying cpuset in DownwardAPI volume for container %q (expecting %d CPUs)", containerName, expectedCPUCount)
+		tCtx.Eventually(func(tCtx ktesting.TContext) bool {
+			return common.HaveDownwardAPICPUsCount(tCtx, restConfig, patchedPod, containerName, expectedCPUCount)
+		}).WithTimeout(2*time.Minute).Should(gomega.BeTrue(),
+			"DownwardAPI cpuset should reflect %d CPUs for container %q", expectedCPUCount, containerName)
+	} else {
+		tCtx.Logf("Skipping DownwardAPI cpuset verification (DownwardAPI not present for this pod)")
+	}
 
 	// Step 5: Verify pod resources post-patch, pre-actuation
 	tCtx.Logf("Verifying pod resources post-patch, pre-actuation")
@@ -342,8 +337,8 @@ func patchAndVerifyPodResize(
 		}).WithTimeout(2*time.Minute).Should(gomega.BeTrue(),
 			"container %q should have %d CPUs in its cpuset after resize", containerName, expectedCPUCount)
 
-		// Step 9: Verify scale delay time (only if isCheckscaleDelayTime is true and isScaleDown is true)
-		if isCheckscaleDelayTime && isScaleDown {
+		// Step 9: Verify scale delay time (only for scale-down)
+		if isScaleDown {
 			timeAfterScaleDown := time.Now()
 			scaleDuration := timeAfterScaleDown.Sub(timeBeforeScaleDown)
 			tCtx.Logf("Verifying scale-down delay: took %.2f seconds (expected > %d seconds)", scaleDuration.Seconds(), scaleDelayTime)
@@ -379,7 +374,7 @@ func stage3And4KubeletDowngrade(
 	containerName string,
 	previousBinDir string,
 	major, previousMinor uint,
-) localupcluster.ModifyOptions {
+) (localupcluster.ModifyOptions, string, string) {
 	tCtx.Helper()
 
 	var restoreOpts localupcluster.ModifyOptions
@@ -475,5 +470,119 @@ func stage3And4KubeletDowngrade(
 		tCtx.Logf("Verified DownwardAPI cpuset is NOT visible for Pod-B after kubelet downgrade")
 	})
 
-	return restoreOpts
+	return restoreOpts, podBName, containerBName
+}
+
+// stage5KubeletRestore restores the kubelet to the master binary, verifies Pod-B is still running,
+// and performs scale up/down on Pod-B to verify scale-delay-time is respected after kubelet restore.
+//
+// Steps:
+//  1. Restore kubelet to master binary (via cluster.Modify with restoreOpts)
+//  2. Wait for node to be schedulable after restore
+//  3. Verify Pod-B is still Running
+//  4. Scale up Pod-B (1→2) and scale down (2→1) with delay verification
+//     Note: Pod-B was created while DownwardAPIAssignedResources was disabled, so the API server
+//     stripped the assigned.cpuset DownwardAPI volume items via dropDisabledAssignedCpuset.
+//     We cannot re-add DownwardAPI volumes to a running pod (volumes are immutable), so we
+//     skip DownwardAPI verification for Pod-B (checkDownwardAPI=false).
+func stage5KubeletRestore(
+	tCtx ktesting.TContext,
+	restConfig *rest.Config,
+	cluster *localupcluster.Cluster,
+	restoreOpts localupcluster.ModifyOptions,
+	podBName string,
+	containerBName string,
+	scaleDelayTime int,
+) {
+	tCtx.Helper()
+
+	// Step 1: Restore kubelet to master binary and re-enable DownwardAPIAssignedResources
+	tCtx.Step("restore-kubelet", func(tCtx ktesting.TContext) {
+		tCtx.Logf("Restoring kubelet to master binary")
+		// The restoreOpts from cluster.Modify doesn't capture FeatureGatesByComponent
+		// for kube-apiserver, so we need to explicitly re-enable DownwardAPIAssignedResources.
+		if restoreOpts.FeatureGatesByComponent == nil {
+			restoreOpts.FeatureGatesByComponent = make(map[localupcluster.ClusterComponentName]string)
+		}
+		restoreOpts.FeatureGatesByComponent[localupcluster.KubeAPIServer] = "DownwardAPIAssignedResources=true"
+		cluster.Modify(tCtx, "2-master-restored", restoreOpts)
+		tCtx.Logf("Kubelet restored to master binary, DownwardAPIAssignedResources re-enabled on kube-apiserver")
+	})
+
+	// Step 2: Wait for node to be schedulable after kubelet restore
+	tCtx.Step("wait-for-node-after-restore", func(tCtx ktesting.TContext) {
+		tCtx.ExpectNoError(e2enode.WaitForAllNodesSchedulable(tCtx, tCtx.Client(), 5*time.Minute))
+		tCtx.Logf("Node is schedulable after kubelet restore")
+	})
+
+	// Step 3: Verify Pod-B is still running after kubelet restore
+	tCtx.Step("verify-pod-b-running", func(tCtx ktesting.TContext) {
+		tCtx.Eventually(func(tCtx ktesting.TContext) error {
+			freshPod, err := tCtx.Client().CoreV1().Pods(tCtx.Namespace()).Get(tCtx, podBName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			if freshPod.Status.Phase != v1.PodRunning {
+				return fmt.Errorf("pod phase is %s, expected Running", freshPod.Status.Phase)
+			}
+			return nil
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.Succeed(),
+			"pod %q should be Running after kubelet restore", podBName)
+		tCtx.Logf("Pod-B %q is still Running after kubelet restore", podBName)
+	})
+
+	// Step 4: Scale up Pod-B (1→2) and scale down (2→1) with delay verification
+	// Pod-B was created while DownwardAPIAssignedResources was disabled, so the API server
+	// stripped the assigned.cpuset DownwardAPI volume items via dropDisabledAssignedCpuset.
+	// We cannot re-add DownwardAPI volumes to a running pod (volumes are immutable), so we
+	// skip DownwardAPI verification for Pod-B (checkDownwardAPI=false).
+	tCtx.Step("scale-up-and-scale-down-pod-b", func(tCtx ktesting.TContext) {
+		// Fetch fresh Pod-B
+		freshPod, err := tCtx.Client().CoreV1().Pods(tCtx.Namespace()).Get(tCtx, podBName, metav1.GetOptions{})
+		tCtx.ExpectNoError(err, "failed to get pod %s", podBName)
+
+		podBOriginalContainers := []podresize.ResizableContainerInfo{
+			{
+				Name: containerBName,
+				Resources: &cgroups.ContainerResources{
+					CPUReq: "1000m", CPULim: "1000m",
+					MemReq: "200Mi", MemLim: "200Mi",
+				},
+				HasExclusiveCPUs: true,
+			},
+		}
+
+		// Scale up: CPU 1 → 2
+		currentContainers := patchAndVerifyPodResize(
+			tCtx, restConfig, freshPod, containerBName,
+			podBOriginalContainers, // containers before resize (1 CPU)
+			[]podresize.ResizableContainerInfo{ // desired containers (2 CPUs)
+				{
+					Name: containerBName,
+					Resources: &cgroups.ContainerResources{
+						CPUReq: "2000m", CPULim: "2000m",
+						MemReq: "200Mi", MemLim: "200Mi",
+					},
+					HasExclusiveCPUs: true,
+				},
+			},
+			2,              // expected CPU count after resize
+			scaleDelayTime, // scale delay time
+			false,          // isScaleDown = false (scale up)
+			true,           // waitForActuation = true (wait for scale-up to complete)
+			false,          // checkDownwardAPI = false (Pod-B has no DownwardAPI volume)
+		)
+
+		// Scale down: CPU 2 → 1 (wait for actuation, verify scale-delay-time)
+		patchAndVerifyPodResize(
+			tCtx, restConfig, freshPod, containerBName,
+			currentContainers,     // containers before resize (2 CPUs)
+			podBOriginalContainers, // desired containers (1 CPU, same as original)
+			1,                     // expected CPU count after resize
+			scaleDelayTime,        // scale delay time
+			true,                  // isScaleDown = true
+			true,                  // waitForActuation = true (wait for scale-down to complete)
+			false,                 // checkDownwardAPI = false (Pod-B has no DownwardAPI volume)
+		)
+	})
 }
