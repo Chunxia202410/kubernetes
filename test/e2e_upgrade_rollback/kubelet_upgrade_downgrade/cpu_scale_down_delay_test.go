@@ -35,7 +35,6 @@ import (
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2etestfiles "k8s.io/kubernetes/test/e2e/framework/testfiles"
-	e2eupgraderollback "k8s.io/kubernetes/test/e2e_upgrade_rollback"
 	"k8s.io/kubernetes/test/e2e_upgrade_rollback/common"
 	"k8s.io/kubernetes/test/utils/client-go/ktesting"
 	"k8s.io/kubernetes/test/utils/localupcluster"
@@ -113,17 +112,16 @@ func testCPUScaleDownDelayKubeletUpgradeDowngrade(tCtx ktesting.TContext) {
 	// ---- Stage 0: Download previous release binaries ----
 	// Download the previous Kubernetes release binaries so we can downgrade the kubelet later.
 	// KUBERNETES_SERVER_CACHE_DIR can be set to cache downloaded binaries across test runs.
-	// cacheDir, _ := os.LookupEnv("KUBERNETES_SERVER_CACHE_DIR")
+	cacheDir, _ := os.LookupEnv("KUBERNETES_SERVER_CACHE_DIR")
 
 	var previousBinDir string
 	var major, previousMinor uint
-	// var gitVersion string
-	// tCtx.Step("download-previous-release-binaries", func(tCtx ktesting.TContext) {
-	// 	previousBinDir, major, previousMinor, gitVersion = common.DownloadPreviousReleaseBinaries(tCtx, repoRoot(), cacheDir)
-	// 	tCtx.Logf("previous release binaries downloaded to %s (version %d.%d, git version %s)",
-	// 		previousBinDir, major, previousMinor, gitVersion)
-	// })
-	previousBinDir = "/home/ubuntu/work_dir/2026/k8s-main/ashish_repo/kubernetes/_output/bin/cache-dir/v1.36.2"
+	var gitVersion string
+	tCtx.Step("download-previous-release-binaries", func(tCtx ktesting.TContext) {
+		previousBinDir, major, previousMinor, gitVersion = common.DownloadPreviousReleaseBinaries(tCtx, repoRoot(), cacheDir)
+		tCtx.Logf("previous release binaries downloaded to %s (version %d.%d, git version %s)",
+			previousBinDir, major, previousMinor, gitVersion)
+	})
 
 	// Verify the previous kubelet binary exists. Fail if it doesn't.
 	tCtx.Step("verify-previous-kubelet-binary", func(tCtx ktesting.TContext) {
@@ -186,7 +184,7 @@ func testCPUScaleDownDelayKubeletUpgradeDowngrade(tCtx ktesting.TContext) {
 		tStamp := strconv.Itoa(time.Now().Nanosecond())
 		podSpec := podresize.MakeResizablePodWithDownwardAPI(tCtx.Namespace(), podAName, tStamp, originalContainers, nil)
 		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
-		podA = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
+		podA = common.CreatePodAndWaitForRunning(tCtx, podSpec)
 	})
 
 	// Verify original pod resources, allocations are as expected
@@ -248,7 +246,7 @@ func testCPUScaleDownDelayKubeletUpgradeDowngrade(tCtx ktesting.TContext) {
 
 	// ---- Stage 3 & 4: Downgrade kubelet, verify pod state ----
 	restoreOpts, podB, containerBName := stage3And4KubeletDowngrade(tCtx, restConfig, cluster, podA, containerAName, previousBinDir, major, previousMinor)
-	
+
 	tCtx.Log("Stage 3 & 4 PASS: Kubelet downgraded, pod state verified")
 
 	// ---- Stage 5: Restore kubelet to master binary, verify Pod-B ----
@@ -450,7 +448,7 @@ func stage3And4KubeletDowngrade(
 		tStamp := strconv.Itoa(time.Now().Nanosecond())
 		podSpec := podresize.MakeResizablePodWithDownwardAPI(pod.Namespace, podBName, tStamp, podBContainers, nil)
 		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
-		podB = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
+		podB = common.CreatePodAndWaitForRunning(tCtx, podSpec)
 		tCtx.Logf("Pod-B %q created and running after kubelet downgrade", podBName)
 	})
 
@@ -576,13 +574,13 @@ func stage5KubeletRestore(
 		// Scale down: CPU 2 → 1 (wait for actuation, verify scale-delay-time)
 		patchAndVerifyPodResize(
 			tCtx, restConfig, freshPod, containerBName,
-			currentContainers,     // containers before resize (2 CPUs)
+			currentContainers,      // containers before resize (2 CPUs)
 			podBOriginalContainers, // desired containers (1 CPU, same as original)
-			1,                     // expected CPU count after resize
-			scaleDelayTime,        // scale delay time
-			true,                  // isScaleDown = true
-			true,                  // waitForActuation = true (wait for scale-down to complete)
-			false,                 // checkDownwardAPI = false (Pod-B has no DownwardAPI volume)
+			1,                      // expected CPU count after resize
+			scaleDelayTime,         // scale delay time
+			true,                   // isScaleDown = true
+			true,                   // waitForActuation = true (wait for scale-down to complete)
+			false,                  // checkDownwardAPI = false (Pod-B has no DownwardAPI volume)
 		)
 	})
 }

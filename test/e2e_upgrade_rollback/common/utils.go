@@ -14,15 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package e2eupgraderollback
+package common
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	"k8s.io/kubernetes/test/utils/client-go/ktesting"
@@ -50,7 +48,6 @@ func CurrentBinDir() (envName, content string) {
 	return
 }
 
-
 // CreatePodAndWaitForRunning creates a pod and waits for it to reach Running state.
 // Returns the created pod object.
 func CreatePodAndWaitForRunning(tCtx ktesting.TContext, pod *v1.Pod) *v1.Pod {
@@ -67,5 +64,3 @@ func CreatePodAndWaitForRunning(tCtx ktesting.TContext, pod *v1.Pod) *v1.Pod {
 
 	return createdPod
 }
-
-

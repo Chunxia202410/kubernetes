@@ -25,12 +25,11 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/kubernetes/test/e2e/common/node/framework/cgroups"
+	"k8s.io/kubernetes/test/e2e/common/node/framework/podresize"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2etestfiles "k8s.io/kubernetes/test/e2e/framework/testfiles"
-	"k8s.io/kubernetes/test/e2e/common/node/framework/cgroups"
-	"k8s.io/kubernetes/test/e2e/common/node/framework/podresize"
-	e2eupgraderollback "k8s.io/kubernetes/test/e2e_upgrade_rollback"
 	"k8s.io/kubernetes/test/e2e_upgrade_rollback/common"
 	"k8s.io/kubernetes/test/utils/client-go/ktesting"
 	"k8s.io/kubernetes/test/utils/localupcluster"
@@ -40,7 +39,7 @@ func init() {
 	ktesting.SetDefaultVerbosity(2)
 }
 
-var repoRoot = e2eupgraderollback.RepoRootDefault()
+var repoRoot = common.RepoRootDefault()
 
 func TestDownwardAPIAssignedResourcesRollback(t *testing.T) {
 	// Test-entry-point
@@ -81,7 +80,7 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 	})
 
 	// Get binary directory from environment
-	envName, dir := e2eupgraderollback.CurrentBinDir()
+	envName, dir := common.CurrentBinDir()
 	if dir == "" {
 		tCtx.Fatalf("%s must be set", envName)
 	}
@@ -132,7 +131,7 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 		tStamp := strconv.Itoa(time.Now().Nanosecond())
 		podSpec := podresize.MakeResizablePodWithDownwardAPI(tCtx.Namespace(), pod1Name, tStamp, containers1, nil)
 		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
-		pod1 = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
+		pod1 = common.CreatePodAndWaitForRunning(tCtx, podSpec)
 	})
 
 	// Verify the assigned.cpuset DownwardAPI item is there in the pod spec
@@ -202,7 +201,7 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 		tStamp := strconv.Itoa(time.Now().Nanosecond())
 		podSpec := podresize.MakeResizablePodWithDownwardAPI(tCtx.Namespace(), pod2Name, tStamp, containers2, nil)
 		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
-		pod2 = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
+		pod2 = common.CreatePodAndWaitForRunning(tCtx, podSpec)
 	})
 
 	tCtx.Log("Stage 5 PASS: New pod created with gate OFF, pod is Running")
@@ -284,7 +283,7 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 		tStamp := strconv.Itoa(time.Now().Nanosecond())
 		podSpec := podresize.MakeResizablePodWithDownwardAPI(tCtx.Namespace(), pod3Name, tStamp, containers3, nil)
 		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
-		pod3 = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
+		pod3 = common.CreatePodAndWaitForRunning(tCtx, podSpec)
 	})
 
 	// Verify assigned.cpuset IS in pod3 spec (gate is ON, so API server preserves it)
