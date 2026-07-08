@@ -17,6 +17,7 @@ limitations under the License.
 package featuregatetoggletest
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,7 +28,10 @@ import (
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2etestfiles "k8s.io/kubernetes/test/e2e/framework/testfiles"
-	"k8s.io/kubernetes/test/e2e_upgrade_rollback"
+	"k8s.io/kubernetes/test/e2e/common/node/framework/cgroups"
+	"k8s.io/kubernetes/test/e2e/common/node/framework/podresize"
+	e2eupgraderollback "k8s.io/kubernetes/test/e2e_upgrade_rollback"
+	"k8s.io/kubernetes/test/e2e_upgrade_rollback/common"
 	"k8s.io/kubernetes/test/utils/client-go/ktesting"
 	"k8s.io/kubernetes/test/utils/localupcluster"
 )
@@ -112,8 +116,22 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 
 	// ---- Stage 2: Create a GU pod with assigned.cpuset DownwardAPI ----
 	var pod1 *v1.Pod
+	const pod1Name = "gu-pod-gate-on"
+	const container1Name = "gu-container"
+	containers1 := []podresize.ResizableContainerInfo{
+		{
+			Name: container1Name,
+			Resources: &cgroups.ContainerResources{
+				CPUReq: "1000m", CPULim: "1000m",
+				MemReq: "100Mi", MemLim: "100Mi",
+			},
+			HasExclusiveCPUs: true,
+		},
+	}
 	tCtx.Step("create-gu-pod-with-downward-api", func(tCtx ktesting.TContext) {
-		podSpec := e2eupgraderollback.MakeGUPodWithDownwardAPI("gu-pod-gate-on", "gu-container", "1")
+		tStamp := strconv.Itoa(time.Now().Nanosecond())
+		podSpec := podresize.MakeResizablePodWithDownwardAPI(tCtx.Namespace(), pod1Name, tStamp, containers1, nil)
+		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
 		pod1 = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
 	})
 
@@ -121,7 +139,7 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 	tCtx.Step("verify-downward-api-item-preserved", func(tCtx ktesting.TContext) {
 		fetchedPod, err := tCtx.Client().CoreV1().Pods(tCtx.Namespace()).Get(tCtx, pod1.Name, metav1.GetOptions{})
 		tCtx.ExpectNoError(err, "get pod %s", pod1.Name)
-		tCtx.Expect(e2eupgraderollback.HasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeTrue(),
+		tCtx.Expect(hasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeTrue(),
 			"assigned.cpuset DownwardAPI item should be preserved when feature gate is ON")
 		tCtx.Logf("Pod %q has assigned.cpuset DownwardAPI item preserved in spec", pod1.Name)
 	})
@@ -130,11 +148,10 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 
 	// ---- Stage 3: Verify cpuset is visible via exec ----
 	tCtx.Step("verify-cpuset-visible-in-downward-api", func(tCtx ktesting.TContext) {
-		e2eupgraderollback.VerifyCpusetVisible(tCtx, savedRestConfig, pod1, "gu-container")
-		// Also log the actual cpuset value for debugging
-		cpusetValue, err := e2eupgraderollback.GetAssignedCpusetFromContainer(tCtx, savedRestConfig, pod1, "gu-container")
-		tCtx.ExpectNoError(err, "read cpuset value from container")
-		tCtx.Logf("Pod %q container %q - assigned.cpuset value: %q", pod1.Name, "gu-container", cpusetValue)
+		tCtx.Eventually(func(tCtx ktesting.TContext) bool {
+			return common.HaveDownwardAPICPUsCount(tCtx, savedRestConfig, pod1, container1Name, 1)
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.BeTrue(),
+			"assigned.cpuset should be visible in DownwardAPI volume when feature gate is ON")
 	})
 
 	tCtx.Log("Stage 3 PASS: assigned.cpuset is visible in DownwardAPI volume file")
@@ -159,18 +176,32 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 
 	// Verify cpusets are still visible in the existing pod (data already on disk)
 	tCtx.Step("verify-cpuset-still-visible-after-toggle", func(tCtx ktesting.TContext) {
-		e2eupgraderollback.VerifyCpusetVisible(tCtx, savedRestConfig, pod1, "gu-container")
-		cpusetValue, err := e2eupgraderollback.GetAssignedCpusetFromContainer(tCtx, savedRestConfig, pod1, "gu-container")
-		tCtx.ExpectNoError(err, "read cpuset value from container after toggle")
-		tCtx.Logf("Pod %q container %q - assigned.cpuset value after toggle: %q", pod1.Name, "gu-container", cpusetValue)
+		tCtx.Eventually(func(tCtx ktesting.TContext) bool {
+			return common.HaveDownwardAPICPUsCount(tCtx, savedRestConfig, pod1, container1Name, 1)
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.BeTrue(),
+			"assigned.cpuset should still be visible in DownwardAPI volume after gate toggle to OFF")
 	})
 
 	tCtx.Log("Stage 4 PASS: Existing pod survived gate toggle, cpusets still visible")
 
 	// ---- Stage 5: Deploy new pod with gate OFF ----
 	var pod2 *v1.Pod
+	const pod2Name = "gu-pod-gate-off"
+	const container2Name = "gu-container-2"
+	containers2 := []podresize.ResizableContainerInfo{
+		{
+			Name: container2Name,
+			Resources: &cgroups.ContainerResources{
+				CPUReq: "1000m", CPULim: "1000m",
+				MemReq: "100Mi", MemLim: "100Mi",
+			},
+			HasExclusiveCPUs: true,
+		},
+	}
 	tCtx.Step("create-new-pod-with-gate-off", func(tCtx ktesting.TContext) {
-		podSpec := e2eupgraderollback.MakeGUPodWithDownwardAPI("gu-pod-gate-off", "gu-container-2", "1")
+		tStamp := strconv.Itoa(time.Now().Nanosecond())
+		podSpec := podresize.MakeResizablePodWithDownwardAPI(tCtx.Namespace(), pod2Name, tStamp, containers2, nil)
+		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
 		pod2 = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
 	})
 
@@ -181,15 +212,18 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 	tCtx.Step("verify-cpuset-dropped-from-spec", func(tCtx ktesting.TContext) {
 		fetchedPod, err := tCtx.Client().CoreV1().Pods(tCtx.Namespace()).Get(tCtx, pod2.Name, metav1.GetOptions{})
 		tCtx.ExpectNoError(err, "get pod %s", pod2.Name)
-		tCtx.Expect(e2eupgraderollback.HasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeFalse(),
+		tCtx.Expect(hasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeFalse(),
 			"assigned.cpuset DownwardAPI item should be dropped from pod spec when feature gate is OFF")
 		tCtx.Logf("Pod %q - assigned.cpuset DownwardAPI item correctly dropped from spec", pod2.Name)
 	})
 
 	// The cpuset file should NOT exist in the container's DownwardAPI volume
 	tCtx.Step("verify-cpuset-file-not-visible", func(tCtx ktesting.TContext) {
-		e2eupgraderollback.VerifyCpusetNotVisible(tCtx, savedRestConfig, pod2, "gu-container-2")
-		tCtx.Logf("Pod %q container %q - assigned.cpuset file correctly not visible", pod2.Name, "gu-container-2")
+		tCtx.Eventually(func(tCtx ktesting.TContext) bool {
+			return common.HaveDownwardAPICpusetNotVisible(tCtx, savedRestConfig, pod2, container2Name)
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.BeTrue(),
+			"assigned.cpuset should NOT be visible in DownwardAPI volume when feature gate is OFF")
+		tCtx.Logf("Pod %q container %q - assigned.cpuset file correctly not visible", pod2.Name, container2Name)
 	})
 
 	tCtx.Log("Stage 6 PASS: assigned.cpuset correctly not visible in new pod when gate is OFF")
@@ -216,23 +250,40 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 	tCtx.Step("verify-cpuset-still-dropped-from-spec", func(tCtx ktesting.TContext) {
 		fetchedPod, err := tCtx.Client().CoreV1().Pods(tCtx.Namespace()).Get(tCtx, pod2.Name, metav1.GetOptions{})
 		tCtx.ExpectNoError(err, "get pod %s", pod2.Name)
-		tCtx.Expect(e2eupgraderollback.HasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeFalse(),
+		tCtx.Expect(hasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeFalse(),
 			"assigned.cpuset DownwardAPI item should still be absent from pod2 spec (was stripped when gate was OFF)")
 		tCtx.Logf("Pod %q - assigned.cpuset still absent from spec after gate toggle back to ON", pod2.Name)
 	})
 
 	// Verify cpuset file is still NOT visible in pod2 (kubelet does not retroactively write it)
 	tCtx.Step("verify-cpuset-still-not-visible", func(tCtx ktesting.TContext) {
-		e2eupgraderollback.VerifyCpusetNotVisible(tCtx, savedRestConfig, pod2, "gu-container-2")
-		tCtx.Logf("Pod %q container %q - assigned.cpuset file still not visible after gate toggle back to ON", pod2.Name, "gu-container-2")
+		tCtx.Eventually(func(tCtx ktesting.TContext) bool {
+			return common.HaveDownwardAPICpusetNotVisible(tCtx, savedRestConfig, pod2, container2Name)
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.BeTrue(),
+			"assigned.cpuset should still NOT be visible after gate toggle back to ON")
+		tCtx.Logf("Pod %q container %q - assigned.cpuset file still not visible after gate toggle back to ON", pod2.Name, container2Name)
 	})
 
 	tCtx.Log("Stage 7 PASS: pod2 survived gate toggle back to ON, assigned.cpuset still not present/visible")
 
 	// ---- Stage 8: Create new pod with gate ON, verify DownwardAPI is exposed ----
 	var pod3 *v1.Pod
+	const pod3Name = "gu-pod-gate-on-again"
+	const container3Name = "gu-container-3"
+	containers3 := []podresize.ResizableContainerInfo{
+		{
+			Name: container3Name,
+			Resources: &cgroups.ContainerResources{
+				CPUReq: "1000m", CPULim: "1000m",
+				MemReq: "100Mi", MemLim: "100Mi",
+			},
+			HasExclusiveCPUs: true,
+		},
+	}
 	tCtx.Step("create-new-pod-with-gate-on", func(tCtx ktesting.TContext) {
-		podSpec := e2eupgraderollback.MakeGUPodWithDownwardAPI("gu-pod-gate-on-again", "gu-container-3", "1")
+		tStamp := strconv.Itoa(time.Now().Nanosecond())
+		podSpec := podresize.MakeResizablePodWithDownwardAPI(tCtx.Namespace(), pod3Name, tStamp, containers3, nil)
+		podSpec = e2epod.MustMixinRestrictedPodSecurity(podSpec)
 		pod3 = e2eupgraderollback.CreatePodAndWaitForRunning(tCtx, podSpec)
 	})
 
@@ -240,20 +291,36 @@ func testDownwardAPIAssignedResourcesRollback(tCtx ktesting.TContext) {
 	tCtx.Step("verify-cpuset-in-spec", func(tCtx ktesting.TContext) {
 		fetchedPod, err := tCtx.Client().CoreV1().Pods(tCtx.Namespace()).Get(tCtx, pod3.Name, metav1.GetOptions{})
 		tCtx.ExpectNoError(err, "get pod %s", pod3.Name)
-		tCtx.Expect(e2eupgraderollback.HasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeTrue(),
+		tCtx.Expect(hasAssignedCpusetDownwardAPIItem(fetchedPod)).To(gomega.BeTrue(),
 			"assigned.cpuset DownwardAPI item should be present in pod3 spec when feature gate is ON")
 		tCtx.Logf("Pod %q - assigned.cpuset DownwardAPI item present in spec", pod3.Name)
 	})
 
 	// Verify cpuset IS visible in pod3 container
 	tCtx.Step("verify-cpuset-visible-in-pod3", func(tCtx ktesting.TContext) {
-		e2eupgraderollback.VerifyCpusetVisible(tCtx, savedRestConfig, pod3, "gu-container-3")
-		cpusetValue, err := e2eupgraderollback.GetAssignedCpusetFromContainer(tCtx, savedRestConfig, pod3, "gu-container-3")
-		tCtx.ExpectNoError(err, "read cpuset value from container")
-		tCtx.Logf("Pod %q container %q - assigned.cpuset value: %q", pod3.Name, "gu-container-3", cpusetValue)
+		tCtx.Eventually(func(tCtx ktesting.TContext) bool {
+			return common.HaveDownwardAPICPUsCount(tCtx, savedRestConfig, pod3, container3Name, 1)
+		}).WithTimeout(2*time.Minute).WithPolling(1*time.Second).Should(gomega.BeTrue(),
+			"assigned.cpuset should be visible in DownwardAPI volume when feature gate is ON")
 	})
 
 	tCtx.Log("Stage 8 PASS: New pod with gate ON has assigned.cpuset exposed in DownwardAPI")
 	tCtx.Log("ALL STAGES PASSED: DownwardAPIAssignedResources feature gate rollback test complete")
 	// Cleanup will destroy the cluster via tCtx.CleanupCtx
+}
+
+// hasAssignedCpusetDownwardAPIItem checks if the pod spec contains the assigned.cpuset
+// DownwardAPI volume file item.
+func hasAssignedCpusetDownwardAPIItem(pod *v1.Pod) bool {
+	for _, vol := range pod.Spec.Volumes {
+		if vol.DownwardAPI == nil {
+			continue
+		}
+		for _, item := range vol.DownwardAPI.Items {
+			if item.ResourceFieldRef != nil && item.ResourceFieldRef.Resource == "assigned.cpuset" {
+				return true
+			}
+		}
+	}
+	return false
 }
