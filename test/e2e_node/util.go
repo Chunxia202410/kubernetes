@@ -195,7 +195,7 @@ func waitForKubeletToStart(ctx context.Context, f *framework.Framework) {
 	// wait until the kubelet health check will succeed
 	gomega.Eventually(ctx, func() bool {
 		return e2enode.HealthCheck(kubeletHealthCheckURL)
-	}, 2*time.Minute, 5*time.Second).Should(gomega.BeTrueBecause("expected kubelet to be in healthy state"))
+	}, 2*time.Minute, f.Timeouts.Poll).Should(gomega.BeTrueBecause("expected kubelet to be in healthy state"))
 
 	// Wait for the Kubelet to be ready.
 	gomega.Eventually(ctx, func(ctx context.Context) error {

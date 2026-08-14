@@ -611,7 +611,7 @@ func doPodResizeMemoryLimitDecreaseTest(f *framework.Framework) {
 		podresize.VerifyPodResources(testPod, viableLoweredLimit, nil)
 
 		ginkgo.By("waiting for viable lowered limit to be actuated")
-		resizedPod := podresize.WaitForPodResizeActuation(ctx, f, podClient, testPod, viableLoweredLimit)
+		resizedPod := podresize.WaitForPodResizeActuation(ctx, f, podClient, testPod)
 		podresize.ExpectPodResized(ctx, f, resizedPod, viableLoweredLimit)
 
 		// There is some latency after container startup before memory usage is scraped. On CRI-O
@@ -684,7 +684,7 @@ func doPodResizeMemoryLimitDecreaseTest(f *framework.Framework) {
 		podresize.VerifyPodResources(testPod, original, nil)
 
 		ginkgo.By("waiting for the original values to be actuated")
-		resizedPod = podresize.WaitForPodResizeActuation(ctx, f, podClient, testPod, original)
+		resizedPod = podresize.WaitForPodResizeActuation(ctx, f, podClient, testPod)
 		podresize.ExpectPodResized(ctx, f, resizedPod, original)
 
 		ginkgo.By("deleting pod")
@@ -819,7 +819,7 @@ func doPodResizeReadAndReplaceTests(f *framework.Framework) {
 
 		ginkgo.By("verifying pod resources after patch")
 		expected := podresize.UpdateExpectedContainerRestarts(ctx, updatedPod, desiredContainers)
-		resizedPod := podresize.WaitForPodResizeActuation(ctx, f, podClient, updatedPod, expected)
+		resizedPod := podresize.WaitForPodResizeActuation(ctx, f, podClient, updatedPod)
 		podresize.ExpectPodResized(ctx, f, resizedPod, expected)
 
 		ginkgo.By("verifying pod fetched from resize subresource")
@@ -947,7 +947,7 @@ func patchAndVerify(ctx context.Context, f *framework.Framework, podClient *e2ep
 	expected := podresize.UpdateExpectedContainerRestarts(ctx, patchedPod, expectedContainers)
 
 	podresize.VerifyPodResources(patchedPod, expected, expectedPodResources)
-	resizedPod := podresize.WaitForPodResizeActuation(ctx, f, podClient, newPod, expected)
+	resizedPod := podresize.WaitForPodResizeActuation(ctx, f, podClient, newPod)
 
 	podresize.ExpectPodResized(ctx, f, resizedPod, expected)
 	if expectedPodResources != nil {
