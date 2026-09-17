@@ -264,24 +264,23 @@ func CollectData(items []v1.DownwardAPIVolumeFile, pod *v1.Pod, host volume.Volu
 			}
 		} else if fileInfo.ResourceFieldRef != nil {
 			// Check DownwardAPIAssignedResources feature gate for assigned.cpuset
-			if fileInfo.ResourceFieldRef.Resource == "assigned.cpuset" {
-				if !utilfeature.DefaultFeatureGate.Enabled(features.DownwardAPIAssignedResources) {
-					klog.V(4).InfoS("Skipping assigned.cpuset because DownwardAPIAssignedResources feature gate is disabled",
-						"pod", klog.KObj(pod), "container", fileInfo.ResourceFieldRef.ContainerName)
-					// Skip assigned.cpuset when feature gate is disabled (backward compatible)
-					continue
-				}
-			}
-
-			containerName := fileInfo.ResourceFieldRef.ContainerName
-			nodeAllocatable, err := host.GetNodeAllocatable()
-			if err != nil {
-				errlist = append(errlist, err)
-			} else if values, err := resource.ExtractResourceValueByContainerNameAndNodeAllocatable(fileInfo.ResourceFieldRef, pod, containerName, nodeAllocatable, host); err != nil {
-				klog.Errorf("Unable to extract field %s: %s", fileInfo.ResourceFieldRef.Resource, err.Error())
-				errlist = append(errlist, err)
+			if fileInfo.ResourceFieldRef.Resource == "assigned.cpuset" && !utilfeature.DefaultFeatureGate.Enabled(features.DownwardAPIAssignedResources) {
+				klog.V(4).InfoS("assigned.cpuset is empty because DownwardAPIAssignedResources feature gate is disabled",
+					"pod", klog.KObj(pod), "container", fileInfo.ResourceFieldRef.ContainerName)
+				// Set empty value for assigned.cpuset when feature gate is disabled
+				fileProjection.Data = []byte("")
 			} else {
-				fileProjection.Data = []byte(values)
+				// Proceed with normal extraction for all other resources, or when feature gate is enabled
+				containerName := fileInfo.ResourceFieldRef.ContainerName
+				nodeAllocatable, err := host.GetNodeAllocatable()
+				if err != nil {
+					errlist = append(errlist, err)
+				} else if values, err := resource.ExtractResourceValueByContainerNameAndNodeAllocatable(fileInfo.ResourceFieldRef, pod, containerName, nodeAllocatable, host); err != nil {
+					klog.Errorf("Unable to extract field %s: %s", fileInfo.ResourceFieldRef.Resource, err.Error())
+					errlist = append(errlist, err)
+				} else {
+					fileProjection.Data = []byte(values)
+				}
 			}
 		}
 
