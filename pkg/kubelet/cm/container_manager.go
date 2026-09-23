@@ -165,6 +165,9 @@ type ContainerManager interface {
 	// GetAssignments returns the current allocated CPU for the specified pod and container.
 	GetAssignments(podUID, containerName string) string
 
+	// GetMemoryAssignments returns the current allocated memory NUMA nodes for the specified pod and container.
+	GetMemoryAssignments(podUID, containerName string) string
+
 	// Implements the PodResources Provider API
 	podresources.CPUsProvider
 	podresources.DevicesProvider

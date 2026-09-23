@@ -169,6 +169,10 @@ func (cm *containerManagerStub) GetAssignments(podUID, containerName string) str
 	return ""
 }
 
+func (cm *containerManagerStub) GetMemoryAssignments(podUID, containerName string) string {
+	return ""
+}
+
 func (cm *containerManagerStub) GetAllocatableCPUs() []int64 {
 	return nil
 }

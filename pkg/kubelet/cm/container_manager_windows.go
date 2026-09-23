@@ -24,12 +24,15 @@ package cm
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"sync"
 
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/cm/memorymanager"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
 
@@ -360,6 +363,33 @@ func (cm *containerManagerImpl) GetAssignments(podUID, containerName string) str
 	return ""
 }
 
+func (cm *containerManagerImpl) GetMemoryAssignments(podUID, containerName string) string {
+	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.WindowsCPUAndMemoryAffinity) {
+		if cm.memoryManager != nil {
+			blocks := cm.memoryManager.GetMemory(nil, podUID, containerName)
+			if len(blocks) == 0 {
+				return ""
+			}
+			// Collect NUMA nodes from all blocks and format as a comma-separated list
+			numaNodes := sets.New[int]()
+			for _, block := range blocks {
+				for _, node := range block.NUMAAffinity {
+					numaNodes.Insert(node)
+				}
+			}
+			if numaNodes.Len() == 0 {
+				return ""
+			}
+			// Convert to sorted slice and format as string
+			sortedNodes := numaNodes.UnsortedList()
+			slices.Sort(sortedNodes)
+			return formatNUMANodes(sortedNodes)
+		}
+		return ""
+	}
+	return ""
+}
+
 func (cm *containerManagerImpl) GetAllocatableCPUs() []int64 {
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.WindowsCPUAndMemoryAffinity) {
 		if cm.cpuManager != nil {
@@ -380,6 +410,35 @@ func (cm *containerManagerImpl) GetPodMemory(_ klog.Logger, _ string) []*podreso
 
 func (cm *containerManagerImpl) GetAllocatableMemory(_ klog.Logger) []*podresourcesapi.ContainerMemory {
 	return nil
+}
+
+// formatNUMANodes formats a sorted slice of NUMA node IDs as a string.
+// It uses range notation for consecutive nodes (e.g., "0-3" for [0,1,2,3])
+// and comma-separated values for non-consecutive nodes (e.g., "0-1,3,5-6").
+func formatNUMANodes(nodes []int) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+
+	var result []string
+	i := 0
+	for i < len(nodes) {
+		start := nodes[i]
+		end := start
+		// Find consecutive nodes
+		for i+1 < len(nodes) && nodes[i+1] == end+1 {
+			i++
+			end = nodes[i]
+		}
+		// Format as range or single value
+		if start == end {
+			result = append(result, fmt.Sprintf("%d", start))
+		} else {
+			result = append(result, fmt.Sprintf("%d-%d", start, end))
+		}
+		i++
+	}
+	return strings.Join(result, ",")
 }
 
 func (cm *containerManagerImpl) GetNodeAllocatableAbsolute() v1.ResourceList {

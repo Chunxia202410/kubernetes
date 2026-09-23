@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -1018,6 +1020,30 @@ func (cm *containerManagerImpl) GetAssignments(podUID, containerName string) str
 	return ""
 }
 
+func (cm *containerManagerImpl) GetMemoryAssignments(podUID, containerName string) string {
+	if cm.memoryManager != nil {
+		blocks := cm.memoryManager.GetMemory(nil, podUID, containerName)
+		if len(blocks) == 0 {
+			return ""
+		}
+		// Collect NUMA nodes from all blocks and format as a comma-separated list
+		numaNodes := sets.New[int]()
+		for _, block := range blocks {
+			for _, node := range block.NUMAAffinity {
+				numaNodes.Insert(node)
+			}
+		}
+		if numaNodes.Len() == 0 {
+			return ""
+		}
+		// Convert to sorted slice and format as string (e.g., "0-1" or "0,2,4")
+		sortedNodes := numaNodes.UnsortedList()
+		slices.Sort(sortedNodes)
+		return formatNUMANodes(sortedNodes)
+	}
+	return ""
+}
+
 func (cm *containerManagerImpl) GetAllocatableCPUs() []int64 {
 	if cm.cpuManager != nil {
 		return int64Slice(cm.cpuManager.GetAllocatableCPUs().UnsortedList())
@@ -1119,6 +1145,35 @@ func containerMemoryFromBlock(blocks []memorymanagerstate.Block) []*podresources
 	}
 
 	return containerMemories
+}
+
+// formatNUMANodes formats a sorted slice of NUMA node IDs as a string.
+// It uses range notation for consecutive nodes (e.g., "0-3" for [0,1,2,3])
+// and comma-separated values for non-consecutive nodes (e.g., "0-1,3,5-6").
+func formatNUMANodes(nodes []int) string {
+	if len(nodes) == 0 {
+		return ""
+	}
+
+	var result []string
+	i := 0
+	for i < len(nodes) {
+		start := nodes[i]
+		end := start
+		// Find consecutive nodes
+		for i+1 < len(nodes) && nodes[i+1] == end+1 {
+			i++
+			end = nodes[i]
+		}
+		// Format as range or single value
+		if start == end {
+			result = append(result, fmt.Sprintf("%d", start))
+		} else {
+			result = append(result, fmt.Sprintf("%d-%d", start, end))
+		}
+		i++
+	}
+	return strings.Join(result, ",")
 }
 
 func (cm *containerManagerImpl) PrepareDynamicResources(ctx context.Context, pod *v1.Pod) error {

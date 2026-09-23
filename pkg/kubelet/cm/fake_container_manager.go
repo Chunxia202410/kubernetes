@@ -258,6 +258,13 @@ func (cm *FakeContainerManager) GetAssignments(_, _ string) string {
 	return ""
 }
 
+func (cm *FakeContainerManager) GetMemoryAssignments(_, _ string) string {
+	cm.Lock()
+	defer cm.Unlock()
+	cm.CalledFunctions = append(cm.CalledFunctions, "GetMemoryAssignments")
+	return ""
+}
+
 func (cm *FakeContainerManager) GetMemory(_ klog.Logger, _ *v1.Pod, _ *v1.Container) []*podresourcesapi.ContainerMemory {
 	cm.Lock()
 	defer cm.Unlock()
