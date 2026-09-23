@@ -83,6 +83,10 @@ func (ctrl *PersistentVolumeController) GetAssignments(podUID, containerName str
 	return ""
 }
 
+func (ctrl *PersistentVolumeController) GetMemoryAssignments(podUID, containerName string) string {
+	return ""
+}
+
 func (ctrl *PersistentVolumeController) GetAttachedVolumesFromNodeStatus() (map[v1.UniqueVolumeName]string, error) {
 	return map[v1.UniqueVolumeName]string{}, nil
 }

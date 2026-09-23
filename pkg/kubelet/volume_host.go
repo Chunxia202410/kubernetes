@@ -243,6 +243,13 @@ func (kvh *kubeletVolumeHost) GetAssignments(podUID, containerName string) strin
 	return ""
 }
 
+func (kvh *kubeletVolumeHost) GetMemoryAssignments(podUID, containerName string) string {
+	if kvh.kubelet.containerManager != nil {
+		return kvh.kubelet.containerManager.GetMemoryAssignments(podUID, containerName)
+	}
+	return ""
+}
+
 func (kvh *kubeletVolumeHost) GetSecretFunc() func(namespace, name string) (*v1.Secret, error) {
 	if kvh.secretManager != nil {
 		return kvh.secretManager.GetSecret

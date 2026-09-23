@@ -49,6 +49,8 @@ import (
 const (
 	// TestCPUSet is a test constant for CPU assignments
 	TestCPUSet = "1,2"
+	// TestMemset is a test constant for memory NUMA node assignments
+	TestMemset = "0"
 )
 
 type FakeVolumeHost interface {
@@ -184,6 +186,10 @@ func (f *fakeVolumeHost) GetNodeAllocatable() (v1.ResourceList, error) {
 
 func (f *fakeVolumeHost) GetAssignments(podUID, containerName string) string {
 	return TestCPUSet
+}
+
+func (f *fakeVolumeHost) GetMemoryAssignments(podUID, containerName string) string {
+	return TestMemset
 }
 
 func (f *fakeVolumeHost) GetSecretFunc() func(namespace, name string) (*v1.Secret, error) {

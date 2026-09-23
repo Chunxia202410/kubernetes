@@ -1137,9 +1137,9 @@ func validateDownwardAPIVolumeFile(file *core.DownwardAPIVolumeFile, fldPath *fi
 		}
 	} else if file.ResourceFieldRef != nil {
 		localValidContainerResourceFieldPathPrefixes := validContainerResourceFieldPathPrefixesWithDownwardAPIHugePages
-		validExpressions := &validContainerResourceFieldPathExpressionsWithoutAssignedCPUSet
+		validExpressions := &validContainerResourceFieldPathExpressionsWithoutAssignedResources
 		if opts.AllowDownwardAPIAssignedResources {
-			validExpressions = &validContainerResourceFieldPathExpressionsWithAssignedCPUSet
+			validExpressions = &validContainerResourceFieldPathExpressionsWithAssignedResources
 		}
 		allErrs = append(allErrs, validateContainerResourceFieldSelector(file.ResourceFieldRef, validExpressions, &localValidContainerResourceFieldPathPrefixes, fldPath.Child("resourceFieldRef"), true, opts)...)
 	} else {
@@ -2879,10 +2879,11 @@ var validEnvDownwardAPIFieldPathExpressions = sets.New(
 )
 
 const resourceAssignedCpuset string = "assigned.cpuset"
+const resourceAssignedMemset string = "assigned.memset"
 
-// validContainerResourceFieldPathExpressionsWithoutAssignedCPUSet contains the container resource field paths
-// that can be exposed via downward API, excluding assigned.cpuset.
-var validContainerResourceFieldPathExpressionsWithoutAssignedCPUSet = sets.New(
+// validContainerResourceFieldPathExpressionsWithoutAssignedResources contains the container resource field paths
+// that can be exposed via downward API, excluding assigned.cpuset and assigned.memset.
+var validContainerResourceFieldPathExpressionsWithoutAssignedResources = sets.New(
 	"limits.cpu",
 	"limits.memory",
 	"limits.ephemeral-storage",
@@ -2891,8 +2892,8 @@ var validContainerResourceFieldPathExpressionsWithoutAssignedCPUSet = sets.New(
 	"requests.ephemeral-storage",
 )
 
-// validContainerResourceFieldPathExpressionsWithAssignedCPUSet includes assigned.cpuset.
-var validContainerResourceFieldPathExpressionsWithAssignedCPUSet = validContainerResourceFieldPathExpressionsWithoutAssignedCPUSet.Union(sets.New(resourceAssignedCpuset))
+// validContainerResourceFieldPathExpressionsWithAssignedResources includes assigned.cpuset and assigned.memset.
+var validContainerResourceFieldPathExpressionsWithAssignedResources = validContainerResourceFieldPathExpressionsWithoutAssignedResources.Union(sets.New(resourceAssignedCpuset, resourceAssignedMemset))
 
 var validContainerResourceFieldPathPrefixesWithDownwardAPIHugePages = sets.New(hugepagesRequestsPrefixDownwardAPI, hugepagesLimitsPrefixDownwardAPI)
 
@@ -2915,7 +2916,11 @@ func validateEnvVarValueFrom(ev core.EnvVar, fldPath *field.Path, opts PodValida
 	if ev.ValueFrom.ResourceFieldRef != nil {
 		numSources++
 		localValidContainerResourceFieldPathPrefixes := validContainerResourceFieldPathPrefixesWithDownwardAPIHugePages
-		allErrs = append(allErrs, validateContainerResourceFieldSelector(ev.ValueFrom.ResourceFieldRef, &validContainerResourceFieldPathExpressionsWithoutAssignedCPUSet, &localValidContainerResourceFieldPathPrefixes, fldPath.Child("resourceFieldRef"), false, opts)...)
+		validExpressions := &validContainerResourceFieldPathExpressionsWithoutAssignedResources
+		if opts.AllowDownwardAPIAssignedResources {
+			validExpressions = &validContainerResourceFieldPathExpressionsWithAssignedResources
+		}
+		allErrs = append(allErrs, validateContainerResourceFieldSelector(ev.ValueFrom.ResourceFieldRef, validExpressions, &localValidContainerResourceFieldPathPrefixes, fldPath.Child("resourceFieldRef"), false, opts)...)
 	}
 	if ev.ValueFrom.ConfigMapKeyRef != nil {
 		numSources++
@@ -3105,6 +3110,12 @@ func validateContainerResourceDivisor(rName string, divisor resource.Quantity, f
 		// It represents which specific CPU cores are allocated to the container, so divisor is not applicable.
 		if !divisor.IsZero() {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("divisor"), rName, fmt.Sprintf("%s does not support divisor", resourceAssignedCpuset)))
+		}
+	case resourceAssignedMemset:
+		// assigned.memset is a memory NUMA node identifier (e.g., "0-1"), not a resource amount.
+		// It represents which memory NUMA nodes are allocated to the container, so divisor is not applicable.
+		if !divisor.IsZero() {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("divisor"), rName, fmt.Sprintf("%s does not support divisor", resourceAssignedMemset)))
 		}
 	}
 	if strings.HasPrefix(rName, hugepagesRequestsPrefixDownwardAPI) || strings.HasPrefix(rName, hugepagesLimitsPrefixDownwardAPI) {

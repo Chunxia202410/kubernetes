@@ -87,6 +87,19 @@ func ExtractResourceValueByContainerName(fs *v1.ResourceFieldSelector, pod *v1.P
 	return ExtractContainerResourceValue(fs, container, nil, "")
 }
 
+// ExtractResourceValueByContainerNameWithHost extracts the value of a resource
+// by providing container name with host parameter for CPU/Memory manager access
+func ExtractResourceValueByContainerNameWithHost(fs *v1.ResourceFieldSelector, pod *v1.Pod, containerName string, host interface {
+	GetAssignments(podUID, containerName string) string
+	GetMemoryAssignments(podUID, containerName string) string
+}) (string, error) {
+	container, err := findContainerInPod(pod, containerName)
+	if err != nil {
+		return "", err
+	}
+	return ExtractContainerResourceValueWithHost(fs, container, host, string(pod.UID))
+}
+
 // ExtractResourceValueByContainerNameAndNodeAllocatable extracts the value of a resource
 // by providing container name and node allocatable
 func ExtractResourceValueByContainerNameAndNodeAllocatable(fs *v1.ResourceFieldSelector, pod *v1.Pod, containerName string, nodeAllocatable v1.ResourceList, host volume.VolumeHost) (string, error) {
@@ -128,6 +141,65 @@ func ExtractContainerResourceValue(fs *v1.ResourceFieldSelector, container *v1.C
 	case "assigned.cpuset":
 		if host != nil {
 			return host.GetAssignments(podUID, container.Name), nil
+		}
+		return "", nil
+	case "assigned.memset":
+		if host != nil {
+			return host.GetMemoryAssignments(podUID, container.Name), nil
+		}
+		return "", nil
+	}
+	// handle extended standard resources with dynamic names
+	// example: requests.hugepages-<pageSize> or limits.hugepages-<pageSize>
+	if strings.HasPrefix(fs.Resource, "requests.") {
+		resourceName := v1.ResourceName(strings.TrimPrefix(fs.Resource, "requests."))
+		if IsHugePageResourceName(resourceName) {
+			return convertResourceHugePagesToString(container.Resources.Requests.Name(resourceName, resource.BinarySI), divisor)
+		}
+	}
+	if strings.HasPrefix(fs.Resource, "limits.") {
+		resourceName := v1.ResourceName(strings.TrimPrefix(fs.Resource, "limits."))
+		if IsHugePageResourceName(resourceName) {
+			return convertResourceHugePagesToString(container.Resources.Limits.Name(resourceName, resource.BinarySI), divisor)
+		}
+	}
+	return "", fmt.Errorf("unsupported container resource : %v", fs.Resource)
+}
+
+// ExtractContainerResourceValueWithHost extracts the value of a resource
+// with an interface-based host for CPU/Memory manager access
+func ExtractContainerResourceValueWithHost(fs *v1.ResourceFieldSelector, container *v1.Container, host interface {
+	GetAssignments(podUID, containerName string) string
+	GetMemoryAssignments(podUID, containerName string) string
+}, podUID string) (string, error) {
+	divisor := resource.Quantity{}
+	if divisor.Cmp(fs.Divisor) == 0 {
+		divisor = resource.MustParse("1")
+	} else {
+		divisor = fs.Divisor
+	}
+
+	switch fs.Resource {
+	case "limits.cpu":
+		return convertResourceCPUToString(container.Resources.Limits.Cpu(), divisor)
+	case "limits.memory":
+		return convertResourceMemoryToString(container.Resources.Limits.Memory(), divisor)
+	case "limits.ephemeral-storage":
+		return convertResourceEphemeralStorageToString(container.Resources.Limits.StorageEphemeral(), divisor)
+	case "requests.cpu":
+		return convertResourceCPUToString(container.Resources.Requests.Cpu(), divisor)
+	case "requests.memory":
+		return convertResourceMemoryToString(container.Resources.Requests.Memory(), divisor)
+	case "requests.ephemeral-storage":
+		return convertResourceEphemeralStorageToString(container.Resources.Requests.StorageEphemeral(), divisor)
+	case "assigned.cpuset":
+		if host != nil {
+			return host.GetAssignments(podUID, container.Name), nil
+		}
+		return "", nil
+	case "assigned.memset":
+		if host != nil {
+			return host.GetMemoryAssignments(podUID, container.Name), nil
 		}
 		return "", nil
 	}

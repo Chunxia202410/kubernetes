@@ -839,6 +839,10 @@ func (adc *attachDetachController) GetAssignments(podUID, containerName string) 
 	return ""
 }
 
+func (adc *attachDetachController) GetMemoryAssignments(podUID, containerName string) string {
+	return ""
+}
+
 func (adc *attachDetachController) GetAttachedVolumesFromNodeStatus() (map[v1.UniqueVolumeName]string, error) {
 	return map[v1.UniqueVolumeName]string{}, nil
 }

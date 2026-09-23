@@ -83,6 +83,10 @@ func (c *Controller) GetAssignments(podUID, containerName string) string {
 	return ""
 }
 
+func (c *Controller) GetMemoryAssignments(podUID, containerName string) string {
+	return ""
+}
+
 func (c *Controller) GetAttachedVolumesFromNodeStatus() (map[v1.UniqueVolumeName]string, error) {
 	return map[v1.UniqueVolumeName]string{}, nil
 }

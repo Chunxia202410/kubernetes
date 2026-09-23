@@ -404,6 +404,9 @@ type VolumeHost interface {
 	// GetAssignments returns the current allocated CPU in cpu manager for the specified pod and container.
 	GetAssignments(podUID, containerName string) string
 
+	// GetMemoryAssignments returns the current allocated memory NUMA nodes for the specified pod and container.
+	GetMemoryAssignments(podUID, containerName string) string
+
 	// Returns a function that returns a secret.
 	GetSecretFunc() func(namespace, name string) (*v1.Secret, error)
 

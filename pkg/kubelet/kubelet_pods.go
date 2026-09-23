@@ -901,7 +901,7 @@ func (kl *Kubelet) makeEnvironmentVariables(ctx context.Context, pod *v1.Pod, co
 				if err != nil {
 					return result, err
 				}
-				runtimeVal, err = containerResourceRuntimeValue(envVar.ValueFrom.ResourceFieldRef, defaultedPod, defaultedContainer)
+				runtimeVal, err = kl.containerResourceRuntimeValue(envVar.ValueFrom.ResourceFieldRef, defaultedPod, defaultedContainer)
 				if err != nil {
 					return result, err
 				}
@@ -1066,12 +1066,13 @@ func (kl *Kubelet) podFieldSelectorRuntimeValue(ctx context.Context, fs *v1.Obje
 }
 
 // containerResourceRuntimeValue returns the value of the provided container resource
-func containerResourceRuntimeValue(fs *v1.ResourceFieldSelector, pod *v1.Pod, container *v1.Container) (string, error) {
+func (kl *Kubelet) containerResourceRuntimeValue(fs *v1.ResourceFieldSelector, pod *v1.Pod, container *v1.Container) (string, error) {
 	containerName := fs.ContainerName
 	if len(containerName) == 0 {
-		return resource.ExtractContainerResourceValue(fs, container, nil, "")
+		// When containerName is empty, use the current container and pass kubelet's containerManager as host
+		return resource.ExtractContainerResourceValueWithHost(fs, container, kl.containerManager, string(pod.UID))
 	}
-	return resource.ExtractResourceValueByContainerName(fs, pod, containerName)
+	return resource.ExtractResourceValueByContainerNameWithHost(fs, pod, containerName, kl.containerManager)
 }
 
 // killPod instructs the container runtime to kill the pod. This method requires that

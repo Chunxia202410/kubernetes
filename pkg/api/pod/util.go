@@ -495,8 +495,8 @@ func GetValidationOptionsFromPodSpecAndMeta(podSpec, oldPodSpec *api.PodSpec, po
 
 		// If old spec has a projected pod certificate requesting an ML-DSA key type, allow it
 		opts.AllowMLDSAPodCertificateKeyTypes = opts.AllowMLDSAPodCertificateKeyTypes || hasMLDSAPodCertificateProjection(oldPodSpec.Volumes)
-		// If old spec has assigned.cpuset in downwardAPI volumes, allow it
-		opts.AllowDownwardAPIAssignedResources = opts.AllowDownwardAPIAssignedResources || assignedCpusetInUse(oldPodSpec)
+		// If old spec has assigned resources (assigned.cpuset or assigned.memset) in downwardAPI volumes, allow it
+		opts.AllowDownwardAPIAssignedResources = opts.AllowDownwardAPIAssignedResources || assignedResourcesInUse(oldPodSpec)
 	}
 	if oldPodMeta != nil && !opts.AllowInvalidPodDeletionCost {
 		// This is an update, so validate only if the existing object was valid.
@@ -2199,9 +2199,9 @@ func dropImageVolumeWithDigest(podStatus *api.PodStatus) {
 	}
 }
 
-// assignedCpusetInUse returns true if the pod spec has assigned.cpuset references
+// assignedResourcesInUse returns true if the pod spec has assigned.cpuset or assigned.memset references
 // in downwardAPI volumes or projected volumes with downwardAPI.
-func assignedCpusetInUse(podSpec *api.PodSpec) bool {
+func assignedResourcesInUse(podSpec *api.PodSpec) bool {
 	if podSpec == nil {
 		return false
 	}
@@ -2210,8 +2210,10 @@ func assignedCpusetInUse(podSpec *api.PodSpec) bool {
 		// Check DownwardAPI volume
 		if vol.DownwardAPI != nil {
 			for _, item := range vol.DownwardAPI.Items {
-				if item.ResourceFieldRef != nil && item.ResourceFieldRef.Resource == "assigned.cpuset" {
-					return true
+				if item.ResourceFieldRef != nil {
+					if item.ResourceFieldRef.Resource == "assigned.cpuset" || item.ResourceFieldRef.Resource == "assigned.memset" {
+						return true
+					}
 				}
 			}
 		}
@@ -2220,7 +2222,7 @@ func assignedCpusetInUse(podSpec *api.PodSpec) bool {
 			for _, source := range vol.Projected.Sources {
 				if source.DownwardAPI != nil {
 					for _, item := range source.DownwardAPI.Items {
-						if item.ResourceFieldRef != nil && item.ResourceFieldRef.Resource == "assigned.cpuset" {
+						if item.ResourceFieldRef != nil && (item.ResourceFieldRef.Resource == "assigned.cpuset" || item.ResourceFieldRef.Resource == "assigned.memset") {
 							return true
 						}
 					}

@@ -432,6 +432,10 @@ func (expc *expandController) GetAssignments(podUID, containerName string) strin
 	return ""
 }
 
+func (expc *expandController) GetMemoryAssignments(podUID, containerName string) string {
+	return ""
+}
+
 func (expc *expandController) GetSecretFunc() func(namespace, name string) (*v1.Secret, error) {
 	return func(_, _ string) (*v1.Secret, error) {
 		return nil, fmt.Errorf("GetSecret unsupported in expandController")
