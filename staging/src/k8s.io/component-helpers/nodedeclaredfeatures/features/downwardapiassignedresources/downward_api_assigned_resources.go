@@ -100,7 +100,7 @@ func podUsesAssignedResources(spec *v1.PodSpec) bool {
 		if vol.DownwardAPI != nil {
 			for _, item := range vol.DownwardAPI.Items {
 				if item.ResourceFieldRef != nil {
-					if item.ResourceFieldRef.Resource == "assigned.cpuset" {
+					if item.ResourceFieldRef.Resource == "assigned.cpuset" || item.ResourceFieldRef.Resource == "assigned.memset" {
 						return true
 					}
 				}
@@ -112,7 +112,7 @@ func podUsesAssignedResources(spec *v1.PodSpec) bool {
 				if source.DownwardAPI != nil {
 					for _, item := range source.DownwardAPI.Items {
 						if item.ResourceFieldRef != nil &&
-							item.ResourceFieldRef.Resource == "assigned.cpuset" {
+							(item.ResourceFieldRef.Resource == "assigned.cpuset" || item.ResourceFieldRef.Resource == "assigned.memset") {
 							return true
 						}
 					}
