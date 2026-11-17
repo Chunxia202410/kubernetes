@@ -1177,6 +1177,7 @@ func TestGetTopologyHintsForResize(t *testing.T) {
 					topology:    tc.topology,
 					numaNodes:   tc.topology.CPUDetails.NUMANodes().List(),
 					cpusToReuse: tc.cpusToReuse,
+					affinity:    scoringTopologyStore(logger),
 				},
 				state: &mockState{
 					assignments:   tc.assignments,
@@ -1394,6 +1395,7 @@ func TestGetPodTopologyHintsForResize(t *testing.T) {
 				policy: &staticPolicy{
 					topology:  tc.topology,
 					numaNodes: tc.topology.CPUDetails.NUMANodes().List(),
+					affinity:  scoringTopologyStore(logger),
 				},
 				state: &mockState{
 					assignments:   tc.assignments,
