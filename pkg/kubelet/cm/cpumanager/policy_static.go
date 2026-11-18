@@ -2349,7 +2349,7 @@ func (p *staticPolicy) getTopologyHintsForResize(logger klog.Logger, s state.Sta
 // while the preferred hints follow the narrowest NUMA nodes the node could fit the new request into, not the
 // NUMA nodes the container already runs on. If the container's CPUs on the narrowest NUMA nodes are not enough
 // for the new request, no preferred hint is generated, which the restricted policy rejects.
-// Example: on a node with 2 NUMA nodes of 6 CPUs each (NUMA node 0: even CPUs, NUMA node 1: odd CPUs),
+// Example: on a node with 2 NUMA nodes of 6 CPUs each (NUMA node 0: {0,2,4,6,8,10}, NUMA node 1: {1,3,5,7,9,11}),
 // a container with allocation {0,1,2,3,5,6,7,8} ({0,2,6,8} on NUMA node 0 and {1,3,5,7} on NUMA node 1)
 // and baseline {0,6} scales down from 8 to 5 CPUs. 5 CPUs fit into a single NUMA node, so only single NUMA node
 // hints are preferred. NUMA node 0 alone is not possible, because the container holds only 4 CPUs there, and

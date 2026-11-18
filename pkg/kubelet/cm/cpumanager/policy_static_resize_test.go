@@ -2327,6 +2327,12 @@ func TestStaticPolicyPodResizeMultipleContainersWithTopologyManager(t *testing.T
 			resized:     []string{"appContainer-0", "appContainer-1"},
 		},
 		{
+			description: "resize of two containers is allowed with the pod scope and the none policy",
+			scope:       topologymanager.PodTopologyScope,
+			policy:      topologymanager.NewNonePolicy(),
+			resized:     []string{"appContainer-0", "appContainer-1"},
+		},
+		{
 			description: "resize of two containers is allowed with the container scope and the restricted policy",
 			scope:       topologymanager.ContainerTopologyScope,
 			policy:      topologymanager.NewRestrictedPolicy(nil, topologymanager.PolicyOptions{}),
@@ -2336,6 +2342,12 @@ func TestStaticPolicyPodResizeMultipleContainersWithTopologyManager(t *testing.T
 			description: "resize of one container is allowed with the pod scope and the restricted policy",
 			scope:       topologymanager.PodTopologyScope,
 			policy:      topologymanager.NewRestrictedPolicy(nil, topologymanager.PolicyOptions{}),
+			resized:     []string{"appContainer-1"},
+		},
+		{
+			description: "resize of one container is allowed with the pod scope and the single-numa-node policy",
+			scope:       topologymanager.PodTopologyScope,
+			policy:      topologymanager.NewSingleNumaNodePolicy(nil, topologymanager.PolicyOptions{}),
 			resized:     []string{"appContainer-1"},
 		},
 	}
